@@ -1,11 +1,69 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
+import type { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent } from "react";
 import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, Eye, ShieldCheck } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+
+// ---- domain types (match the FastAPI response shapes in koomsure-backend) ----
+interface Listing {
+  platform: string;
+  shop_name: string;
+  net_price: number | null;
+  price_change: number | null;
+  coupon: number;
+  shipping: number | null;
+  in_stock: boolean;
+  url: string;
+}
+
+interface Product {
+  product_id: string;
+  brand: string;
+  model_number: string;
+  product_name: string;
+  image: string;
+  specs: string;
+  listings: Listing[];
+}
+
+interface PriceHistoryEntry {
+  platform: string;
+  date: string;
+  price: number;
+}
+
+interface ListingDetails {
+  currentPrice: number | null;
+  originalPrice: number | null;
+  discountPct: number;
+  coupon: number;
+  totalPrice: number | null;
+}
+
+// A compare-table row: one listing merged with its derived price breakdown + ranking flag.
+interface CompareRow extends Listing, ListingDetails {
+  isCheapest: boolean;
+}
+
+// Deal-dashboard card data - "discount" mode uses original_price/discount_pct,
+// "drop" mode uses previous_price/drop_amount/drop_pct (see DealCard's `mode` prop).
+interface Deal {
+  product_id: string;
+  product_name: string;
+  image: string;
+  platform: string;
+  current_price: number;
+  url: string;
+  original_price?: number;
+  discount_pct?: number;
+  previous_price?: number;
+  drop_amount?: number;
+  drop_pct?: number;
+}
 
 // เปลี่ยนจาก const เป็น let: การ์ดสินค้า/ตัวกรอง/RELATED_PRODUCTS ฯลฯ ทั้งไฟล์อ้างอิง PRODUCTS ตัวนี้โดยตรง
 // (ไม่ได้ผ่าน props) เพื่อไม่ต้องแก้โค้ดหลายพันบรรทัดที่มีอยู่แล้ว จึง "mutate ข้อมูลในอาเรย์เดิม" แทนการสร้างใหม่
 // ดูฟังก์ชัน applyLiveProducts() ท้ายไฟล์ที่ทำหน้าที่นี้ตอนโหลดข้อมูลจริงจาก backend
-let PRODUCTS = [
+let PRODUCTS: Product[] = [
   // Real data from the data team (Price_historyy.json, grouped by Product ID, includes coupon/shipping/net price)
   {
     product_id: "P001",
@@ -423,7 +481,12 @@ const T = {
   red: "#E2685C",
 };
 
-const PLATFORM_STYLE = {
+interface PlatformStyle {
+  bg: string;
+  fg: string;
+}
+
+const PLATFORM_STYLE: Record<string, PlatformStyle> = {
   Shopee: { bg: "#FDE7DD", fg: "#E85B34" },
   Lazada: { bg: "#E6E7F9", fg: "#3742A0" },
   "TikTok Shop": { bg: "#2B2B33", fg: "#FFFFFF" },
@@ -453,21 +516,21 @@ const PLATFORM_STYLE = {
   iStudio: { bg: "#EFF3E8", fg: "#5C7A2E" },
 };
 
-function fmtBaht(n) {
+function fmtBaht(n: number) {
   return n.toLocaleString("th-TH");
 }
 
-function minPrice(listings) {
-  const prices = listings.map((l) => l.net_price).filter((p) => p !== null && p !== undefined);
+function minPrice(listings: Listing[]): number | null {
+  const prices = listings.map((l) => l.net_price).filter((p): p is number => p !== null && p !== undefined);
   return prices.length ? Math.min(...prices) : null;
 }
 
 // ราคาสุทธิที่ถูกที่สุด (Best Value) ของสินค้า - เลือกจากร้านที่มีของก่อนเสมอ ถ้าไม่มีร้านไหนมีของเลยค่อย fallback ไปราคาต่ำสุดโดยรวม
-function bestValuePrice(listings) {
+function bestValuePrice(listings: Listing[]): number | null {
   const inStockPrices = listings
     .filter((l) => l.in_stock !== false)
     .map((l) => l.net_price)
-    .filter((p) => p !== null && p !== undefined);
+    .filter((p): p is number => p !== null && p !== undefined);
   if (inStockPrices.length) return Math.min(...inStockPrices);
   return minPrice(listings);
 }
@@ -492,7 +555,7 @@ const PHONE_HINTS = ["iphone", "galaxy a", "smartphone", "สมาร์ทโ�
 const TABLET_HINTS = ["ipad", "tab s9", "macbook", "vivobook", "แท็บเล็ต", "โน้ตบุ๊ค"];
 const WATCH_HINTS = ["apple watch", "galaxy watch", "smart band", "สมาร์ทวอทช์"];
 
-function categorize(product) {
+function categorize(product: Product): string {
   const text = `${product.product_name} ${product.model_number}`.toLowerCase();
   if (ACCESSORY_HINTS.some((k) => text.includes(k))) return "accessory";
   if (PHONE_HINTS.some((k) => text.includes(k))) return "phone";
@@ -501,7 +564,13 @@ function categorize(product) {
   return "accessory";
 }
 
-const PRICE_RANGES = [
+interface PriceRange {
+  id: string;
+  label: string;
+  test: (price: number) => boolean;
+}
+
+const PRICE_RANGES: PriceRange[] = [
   { id: "all", label: "ทุกช่วงราคา", test: () => true },
   { id: "under1000", label: "ต่ำกว่า ฿1,000", test: (p) => p < 1000 },
   { id: "1000to5000", label: "฿1,000 - ฿5,000", test: (p) => p >= 1000 && p <= 5000 },
@@ -515,7 +584,7 @@ const PRICE_RANGES = [
 //    จับคู่แบบหลวมๆ ในตระกูล "AirPods Pro" เท่านั้น ควรให้ทีม Data ยืนยัน SKU ที่ตรงรุ่นจริงในอนาคต
 // 2. P026 (AirPods รุ่นมาตรฐาน Gen 3) ไม่มีจุกยางถอดเปลี่ยนได้เหมือน AirPods Pro จึงไม่จับคู่กับ P017/P015 เพราะใช้ด้วยกันไม่ได้จริง
 // 3. P020, P024, P025, P027, P028 ยังไม่มีอุปกรณ์เสริมที่ตรงรุ่นในระบบตอนนี้ - รอทีม Data เพิ่มข้อมูลรอบถัดไป
-const RELATED_PRODUCTS = {
+const RELATED_PRODUCTS: Record<string, string[]> = {
   P001: ["P005", "P016", "P026", "P004"],
   P002: ["P005", "P016"],
   P003: ["P012", "P021", "P022"],
@@ -546,56 +615,31 @@ const RELATED_PRODUCTS = {
   P028: [],
 };
 
-function getRelatedProducts(productId) {
+function getRelatedProducts(productId: string): Product[] {
   const ids = RELATED_PRODUCTS[productId] || [];
-  return ids.map((id) => PRODUCTS.find((p) => p.product_id === id)).filter(Boolean);
+  return ids
+    .map((id) => PRODUCTS.find((p) => p.product_id === id))
+    .filter((p): p is Product => p !== undefined);
 }
 
 // ============================================================================
 // FEATURE: กราฟราคาย้อนหลัง + ตารางเปรียบเทียบราคา
 // ============================================================================
-// STEP 1: บันทึกราคาย้อนหลัง (จำลองไฟล์ price_history ที่ scraper บันทึกสะสมทุกครั้งที่รัน)
-// ข้อมูลด้านล่างนี้เป็นข้อมูลจริงที่ทีม Data ส่งมาให้ในโปรเจกต์นี้ 2 รอบ (29 ก.ค. 2569 และ 5 ส.ค. 2569)
-// เฉพาะ P001, P002, P003 เท่านั้นที่มีการเก็บซ้ำมากกว่า 1 ครั้ง จึงมีข้อมูลย้อนหลังพอสร้างกราฟ
-// ส่วน P004-P028 ถูก scrape มาแค่รอบเดียว (ชุดข้อมูล 28 สินค้า) จึงยังไม่มี "ประวัติ" ให้พล็อต - ตรงนี้คือ
-// พฤติกรรมจริงของระบบ ไม่ใช่ข้อจำกัดของโค้ด (แสดง fallback message ตามที่ระบุในโจทย์)
-const PRICE_HISTORY_LOG = {
-  P001: [
-    { platform: "Apple Store", date: "2026-07-29", price: 26900 },
-    { platform: "Apple Store", date: "2026-08-05", price: 26900 },
-    { platform: "BaNANA", date: "2026-07-29", price: 26500 },
-    { platform: "BaNANA", date: "2026-08-05", price: 26500 },
-    { platform: "JIB", date: "2026-07-29", price: 26900 },
-    { platform: "JIB", date: "2026-08-05", price: 26900 },
-    { platform: "Power Buy", date: "2026-07-29", price: 26500 },
-    { platform: "Power Buy", date: "2026-08-05", price: 26500 },
-  ],
-  P002: [
-    { platform: "BaNANA", date: "2026-07-29", price: 4499 },
-    { platform: "BaNANA", date: "2026-08-05", price: 4499 },
-    { platform: "Power Buy", date: "2026-07-29", price: 5999 },
-    { platform: "Power Buy", date: "2026-08-05", price: 5999 },
-    { platform: "JIB", date: "2026-08-05", price: 5999 }, // เพิ่ง scrape ได้ในรอบหลัง ยังไม่มีข้อมูลรอบแรก
-  ],
-  P003: [
-    { platform: "Power Buy", date: "2026-07-29", price: 429 },
-    { platform: "Power Buy", date: "2026-08-05", price: 429 },
-    { platform: "HomePro", date: "2026-07-29", price: 429 },
-    { platform: "HomePro", date: "2026-08-05", price: 429 },
-    { platform: "Central", date: "2026-07-29", price: 599 },
-    { platform: "Central", date: "2026-08-05", price: 599 },
-    { platform: "BaNANA", date: "2026-07-29", price: 379 },
-    { platform: "BaNANA", date: "2026-08-05", price: 379 },
-  ],
-};
+// ราคาย้อนหลังตอนนี้มาจากตาราง price_history จริงใน Postgres ผ่าน GET /api/products/:id/price-history
+// (ดู fetchPriceHistory ด้านล่าง) ไม่ได้ฝัง mock log ไว้ในไฟล์นี้อีกต่อไป
 
 // STEP 2: แปลง log แบบ flat (1 แถว = 1 แพลตฟอร์ม 1 วัน) ให้เป็นรูปแบบที่ Recharts ใช้ได้
 // คือ array ของ { date, [ชื่อแพลตฟอร์ม1]: ราคา, [ชื่อแพลตฟอร์ม2]: ราคา, ... } เรียงตามวันที่
-function buildChartData(historyEntries) {
+interface ChartDataRow {
+  date: string;
+  [platform: string]: string | number | null;
+}
+
+function buildChartData(historyEntries: PriceHistoryEntry[]): ChartDataRow[] {
   const dates = [...new Set(historyEntries.map((e) => e.date))].sort();
   const platforms = [...new Set(historyEntries.map((e) => e.platform))];
   return dates.map((date) => {
-    const row = { date };
+    const row: ChartDataRow = { date };
     platforms.forEach((platform) => {
       const match = historyEntries.find((e) => e.date === date && e.platform === platform);
       row[platform] = match ? match.price : null; // null = วันนั้นไม่มีข้อมูลของแพลตฟอร์มนี้ Recharts จะเว้นช่วงเส้นให้เอง
@@ -605,13 +649,13 @@ function buildChartData(historyEntries) {
 }
 
 // STEP 3: เช็คว่าข้อมูลย้อนหลัง "พอ" จะพล็อตกราฟที่มีความหมายหรือยัง (ต้องมีอย่างน้อย 2 วันที่ต่างกัน)
-function hasEnoughHistory(historyEntries) {
+function hasEnoughHistory(historyEntries: PriceHistoryEntry[]): boolean {
   if (!historyEntries || historyEntries.length === 0) return false;
   const distinctDates = new Set(historyEntries.map((e) => e.date));
   return distinctDates.size >= 2;
 }
 
-function fmtDateShort(dateStr) {
+function fmtDateShort(dateStr: string) {
   const d = new Date(dateStr);
   return d.toLocaleDateString("th-TH", { day: "numeric", month: "short" });
 }
@@ -619,7 +663,7 @@ function fmtDateShort(dateStr) {
 // STEP 4: คำนวณ "ราคาปัจจุบัน", "ราคาเดิม", "%ลด" และ "ราคารวม" จากข้อมูลที่มีอยู่แล้วใน listing
 // (net_price = ราคาสุทธิหลังหักคูปอง+บวกค่าส่ง ที่ทีม Data ส่งมา, price_change = ปัจจุบัน - เดิม)
 // current_price = net_price - shipping + coupon  →  ย้อนกลับสมการ "สุทธิ = ปัจจุบัน - คูปอง + ค่าส่ง"
-function deriveListingDetails(listing) {
+function deriveListingDetails(listing: Listing): ListingDetails {
   const shipping = listing.shipping ?? 0;
   const coupon = listing.coupon ?? 0;
   const hasPrice = listing.net_price !== null && listing.net_price !== undefined;
@@ -627,7 +671,7 @@ function deriveListingDetails(listing) {
     return { currentPrice: null, originalPrice: null, discountPct: 0, coupon: 0, totalPrice: null };
   }
   // currentPrice = "ราคาปัจจุบัน" ที่ป้ายราคาบนหน้าร้าน ก่อนหักคูปอง (ย้อนสมการ: สุทธิ = ปัจจุบัน - คูปอง + ค่าส่ง)
-  const currentPrice = listing.net_price - shipping + coupon;
+  const currentPrice = listing.net_price! - shipping + coupon;
   const originalPrice = currentPrice - (listing.price_change ?? 0);
   // %ลด คำนวณจาก "ราคาป้าย" (ปัจจุบัน vs เดิม) เท่านั้น ไม่เกี่ยวกับคูปองเลย - คูปองแสดงแยกเป็นคอลัมน์ของตัวเองแทน
   // (พิสูจน์ด้วยตัวเลขจริงแล้วว่าค่านี้ตรงกับ %ลด ในข้อมูลดิบเป๊ะๆ ไม่ว่าคูปองจะเยอะแค่ไหนก็ไม่กระทบตัวเลขนี้)
@@ -650,24 +694,37 @@ function deriveListingDetails(listing) {
 // (ดูตัวอย่าง Express endpoint คู่กันได้ในไฟล์ server.js ที่แนบมาด้วย)
 const API_BASE = "http://localhost:8000"; // ตอน deploy จริงเปลี่ยนเป็น URL ของ backend จริง
 
-function fetchPriceHistory(productId) {
+// รูปสินค้าจาก backend เป็น relative path เช่น "/static/products/P001.jpg" (เดิมเคยเป็น base64 data URI
+// ฝังมากับข้อมูลเลยจึงไม่เคยมีปัญหานี้) ต้องต่อ API_BASE ให้เต็มก่อน ไม่งั้น browser จะ resolve path นี้
+// เทียบกับ origin ของหน้าเว็บ (localhost:5173) แทนที่จะเป็น backend (localhost:8000) ทำให้รูปหายไปหมด
+function resolveImageUrl(path: string | null | undefined): string | undefined {
+  if (!path) return undefined;
+  if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) return path;
+  return `${API_BASE}${path}`;
+}
+
+function fetchPriceHistory(productId: string): Promise<PriceHistoryEntry[]> {
   return fetch(`${API_BASE}/api/products/${productId}/price-history`).then((r) => {
     if (!r.ok) throw new Error("โหลดราคาย้อนหลังไม่สำเร็จ");
-    return r.json();
+    return r.json() as Promise<PriceHistoryEntry[]>;
   });
 }
 
-function fetchCompareData(productId) {
+function fetchCompareData(productId: string): Promise<CompareRow[]> {
   return fetch(`${API_BASE}/api/products/${productId}/compare`)
     .then((r) => {
       if (!r.ok) throw new Error("โหลดข้อมูลเปรียบเทียบราคาไม่สำเร็จ");
-      return r.json();
+      return r.json() as Promise<Listing[]>;
     })
     .then((listings) => {
       // logic คำนวณ isCheapest ยังทำฝั่ง frontend เหมือนเดิม (ตัว backend ส่งแค่ราคาดิบมาให้)
-      const rows = listings.map((listing) => ({ ...listing, ...deriveListingDetails(listing) }));
+      const rows: CompareRow[] = listings.map((listing) => ({
+        ...listing,
+        ...deriveListingDetails(listing),
+        isCheapest: false,
+      }));
       const eligible = rows.filter((r) => r.in_stock !== false && r.totalPrice !== null);
-      const cheapestTotal = eligible.length ? Math.min(...eligible.map((r) => r.totalPrice)) : null;
+      const cheapestTotal = eligible.length ? Math.min(...eligible.map((r) => r.totalPrice as number)) : null;
       return rows.map((r) => ({
         ...r,
         isCheapest: cheapestTotal !== null && r.in_stock !== false && r.totalPrice === cheapestTotal,
@@ -676,8 +733,13 @@ function fetchCompareData(productId) {
 }
 
 // STEP 6: กราฟเส้นราคาย้อนหลัง แยกสีตามแพลตฟอร์ม (ใช้สีเดียวกับ PLATFORM_STYLE ให้สอดคล้องกับที่อื่นในแอป)
-function PriceHistoryChart({ productId }) {
-  const [state, setState] = useState({ status: "loading", data: [] });
+interface PriceHistoryState {
+  status: "loading" | "success" | "error";
+  data: PriceHistoryEntry[];
+}
+
+function PriceHistoryChart({ productId }: { productId: string }) {
+  const [state, setState] = useState<PriceHistoryState>({ status: "loading", data: [] });
 
   useEffect(() => {
     let cancelled = false;
@@ -745,8 +807,8 @@ function PriceHistoryChart({ productId }) {
             domain={["dataMin - 200", "dataMax + 200"]}
           />
           <Tooltip
-            formatter={(value) => (value === null ? "ไม่มีข้อมูล" : `฿${fmtBaht(value)}`)}
-            labelFormatter={fmtDateShort}
+            formatter={(value) => (value === null || value === undefined ? "ไม่มีข้อมูล" : `฿${fmtBaht(Number(value))}`)}
+            labelFormatter={(label) => fmtDateShort(String(label))}
             contentStyle={{ borderRadius: 12, border: `1px solid ${T.blueLine}`, fontSize: 12 }}
           />
           <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -768,8 +830,13 @@ function PriceHistoryChart({ productId }) {
 }
 
 // STEP 7: ตารางเปรียบเทียบราคาใต้กราฟ ตามคอลัมน์ที่โจทย์ระบุ
-function CompareTable({ productId }) {
-  const [state, setState] = useState({ status: "loading", rows: [] });
+interface CompareState {
+  status: "loading" | "success" | "error";
+  rows: CompareRow[];
+}
+
+function CompareTable({ productId }: { productId: string }) {
+  const [state, setState] = useState<CompareState>({ status: "loading", rows: [] });
 
   useEffect(() => {
     let cancelled = false;
@@ -854,10 +921,10 @@ function CompareTable({ productId }) {
                   )}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5 font-semibold" style={{ color: T.inkStrong }}>
-                  {isOut ? "-" : `฿${fmtBaht(row.currentPrice)}`}
+                  {isOut ? "-" : `฿${fmtBaht(row.currentPrice ?? 0)}`}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5" style={{ color: T.inkSoft }}>
-                  {isOut ? "-" : `฿${fmtBaht(row.originalPrice)}`}
+                  {isOut ? "-" : `฿${fmtBaht(row.originalPrice ?? 0)}`}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5" style={{ color: isOut ? T.inkSoft : T.green }}>
                   {isOut || row.discountPct <= 0 ? "-" : `-${row.discountPct.toFixed(0)}%`}
@@ -869,7 +936,7 @@ function CompareTable({ productId }) {
                   {isOut ? "-" : row.shipping ? `฿${fmtBaht(row.shipping)}` : "ฟรี"}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5 font-bold" style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }}>
-                  {isOut ? "-" : `฿${fmtBaht(row.totalPrice)}`}
+                  {isOut ? "-" : `฿${fmtBaht(row.totalPrice ?? 0)}`}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5">
                   {isOut ? (
@@ -901,145 +968,38 @@ function CompareTable({ productId }) {
 // ============================================================================
 // FEATURE: Top Deal Dashboard (หน้าแรก)
 // ============================================================================
-// STEP 1: "ลดแรงสุด" (top-discount) - คำนวณจากข้อมูลสินค้าจริงในแอป (PRODUCTS)
-// สอดคล้องกับ backend endpoint GET /api/deals/top-discount ที่คำนวณ
-// %ลด = (ราคาเดิม - ราคาปัจจุบัน) / ราคาเดิม * 100 จาก record ล่าสุดของทุกสินค้าทุกแพลตฟอร์ม
-// ในแอปนี้ "record ล่าสุด" คือ listing ปัจจุบันใน PRODUCTS อยู่แล้ว (ไม่ต้องรอ backend)
-// จึงคำนวณได้จากข้อมูลจริงทันที ไม่ต้อง mock (มีดีลจริงในแคตตาล็อกเยอะพออยู่แล้ว)
-function computeTopDiscountDeals(limit = 10) {
-  const deals = [];
-  PRODUCTS.forEach((product) => {
-    product.listings.forEach((listing) => {
-      if (listing.in_stock === false) return; // สินค้าหมดสต๊อกไม่นับเป็นดีลเด่น
-      const { currentPrice, originalPrice, discountPct } = deriveListingDetails(listing);
-      if (discountPct > 0) {
-        deals.push({
-          product_id: product.product_id,
-          product_name: product.product_name,
-          image: product.image,
-          platform: listing.platform,
-          current_price: currentPrice,
-          original_price: originalPrice,
-          discount_pct: discountPct,
-          url: listing.url,
-        });
-      }
-    });
-  });
-  deals.sort((a, b) => b.discount_pct - a.discount_pct);
-  return deals.slice(0, limit);
-}
-
-// STEP 2: "ราคาตกล่าสุด" (price-drop) - ต้องเทียบ record ล่าสุด vs ก่อนหน้าของสินค้าเดียวกัน
-// ข้อมูลจริงที่มีตอนนี้ (PRICE_HISTORY_LOG) เก็บแค่ 2 รอบและราคาไม่เปลี่ยนเลยระหว่าง 2 รอบนั้น
-// (เช็คได้จริงจากโค้ด - เป็นข้อมูลจริงจากทีม Data ไม่ได้ตั้งใจทำให้แบน) จึงยังไม่มี "ราคาตก" ให้โชว์จริงๆ
-// ตรงนี้แหละคือเหตุผลที่โจทย์อยากได้ Empty State - สถานการณ์นี้จะเกิดขึ้นจริงตอนระบบเพิ่งเริ่มเก็บข้อมูล
-// เพื่อให้ทดสอบ UI การ์ดได้ก่อน backend สะสมข้อมูลมากพอ จึงเตรียมชุด MOCK ไว้ต่างหาก สลับได้ด้วย USE_MOCK_PRICE_DROP
-const USE_MOCK_PRICE_DROP = true; // เปลี่ยนเป็น false เมื่อ PRICE_HISTORY_LOG มีข้อมูลราคาตกจริงเพียงพอ
-
-// Mock data สำหรับทดสอบ UI เท่านั้น (ใช้ product_id จริงในแคตตาล็อกเพื่อให้กดเปิด Modal ได้จริง
-// แต่ตัวเลขราคา/วันที่เป็นตัวอย่างสมมติ ไม่ใช่ข้อมูลที่ scrape มาจริง)
-const MOCK_PRICE_DROP_DEALS = [
-  {
-    product_id: "P021",
-    product_name: "MacBook Air 13 M3 / 256GB / Midnight",
-    image: PRODUCTS.find((p) => p.product_id === "P021")?.image,
-    platform: "JIB",
-    current_price: 37923,
-    previous_price: 39900,
-    drop_amount: 1977,
-    drop_pct: 5.0,
-    url: PRODUCTS.find((p) => p.product_id === "P021")?.listings.find((l) => l.platform === "JIB")?.url || "#",
-  },
-  {
-    product_id: "P027",
-    product_name: "Sony WH-1000XM5 Silver",
-    image: PRODUCTS.find((p) => p.product_id === "P027")?.image,
-    platform: "Power Buy",
-    current_price: 8047,
-    previous_price: 9990,
-    drop_amount: 1943,
-    drop_pct: 19.4,
-    url: PRODUCTS.find((p) => p.product_id === "P027")?.listings.find((l) => l.platform === "Power Buy")?.url || "#",
-  },
-  {
-    product_id: "P020",
-    product_name: "Samsung Galaxy Tab S9FE+ 5G 128GB Gray",
-    image: PRODUCTS.find((p) => p.product_id === "P020")?.image,
-    platform: "Lazada",
-    current_price: 16120,
-    previous_price: 18900,
-    drop_amount: 2780,
-    drop_pct: 14.7,
-    url: PRODUCTS.find((p) => p.product_id === "P020")?.listings.find((l) => l.platform === "Lazada")?.url || "#",
-  },
-];
-
-function computePriceDropDeals(limit = 10) {
-  if (USE_MOCK_PRICE_DROP) return MOCK_PRICE_DROP_DEALS.slice(0, limit);
-
-  // ตรรกะจริง (จะเริ่มมีผลลัพธ์เมื่อ PRICE_HISTORY_LOG สะสมมากกว่า 2 รอบ และราคาบางตัวลดลงจริง)
-  const drops = [];
-  Object.entries(PRICE_HISTORY_LOG).forEach(([productId, entries]) => {
-    const product = PRODUCTS.find((p) => p.product_id === productId);
-    if (!product) return;
-    const platforms = [...new Set(entries.map((e) => e.platform))];
-    platforms.forEach((platform) => {
-      const timeline = entries.filter((e) => e.platform === platform).sort((a, b) => new Date(a.date) - new Date(b.date));
-      if (timeline.length < 2) return; // มี record เดียว ยังไม่เคยเทียบ ข้าม
-      const latest = timeline[timeline.length - 1];
-      const previous = timeline[timeline.length - 2];
-      const dropAmount = previous.price - latest.price;
-      if (dropAmount <= 0) return; // ไม่ได้ลด ข้าม
-      drops.push({
-        product_id: productId,
-        product_name: product.product_name,
-        image: product.image,
-        platform,
-        current_price: latest.price,
-        previous_price: previous.price,
-        drop_amount: dropAmount,
-        drop_pct: (dropAmount / previous.price) * 100,
-        url: (product.listings.find((l) => l.platform === platform) || {}).url || "#",
-      });
-    });
-  });
-  drops.sort((a, b) => b.drop_amount - a.drop_amount);
-  return drops.slice(0, limit);
-}
-
-// STEP 3: จำลอง REST API (สอดคล้องกับ GET /api/deals/top-discount และ GET /api/deals/price-drop ใน server.js)
-// ตอน deploy จริง เปลี่ยน resolve(...) เป็น fetch('/api/deals/top-discount?limit=10').then(r => r.json())
-function fetchTopDiscountDeals(limit = 10) {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      try {
-        resolve(computeTopDiscountDeals(limit));
-      } catch (err) {
-        reject(err);
-      }
-    }, 400 + Math.random() * 300);
+// ทั้งสอง endpoint คำนวณจากข้อมูลจริงใน Postgres ฝั่ง backend แล้ว (products/listings/coupons
+// สำหรับ top-discount, price_history สำหรับ price-drop) ดู koomsure-backend/src/koom_sure_backend/api/services/deals
+// price-drop จะเป็น array ว่างจนกว่าจะมีสแนปช็อตราคาสะสมอย่างน้อย 2 รอบต่อสินค้า+แพลตฟอร์ม - เป็นสถานะที่ถูกต้องจริง ไม่ใช่บั๊ก
+function fetchTopDiscountDeals(limit = 10): Promise<Deal[]> {
+  return fetch(`${API_BASE}/api/deals/top-discount?limit=${limit}`).then((r) => {
+    if (!r.ok) throw new Error("โหลดดีลลดแรงสุดไม่สำเร็จ");
+    return r.json() as Promise<Deal[]>;
   });
 }
 
-function fetchPriceDropDeals(limit = 10) {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      try {
-        resolve(computePriceDropDeals(limit));
-      } catch (err) {
-        reject(err);
-      }
-    }, 400 + Math.random() * 300);
+function fetchPriceDropDeals(limit = 10): Promise<Deal[]> {
+  return fetch(`${API_BASE}/api/deals/price-drop?limit=${limit}`).then((r) => {
+    if (!r.ok) throw new Error("โหลดดีลราคาตกไม่สำเร็จ");
+    return r.json() as Promise<Deal[]>;
   });
 }
 
 // STEP 4: การ์ดดีลเดี่ยว - รูป, ชื่อสินค้า, แพลตฟอร์ม, ราคาปัจจุบัน+ราคาเดิมขีดฆ่า, badge %ลด/จำนวนที่ลด
-function DealCard({ deal, mode, onOpenProduct }) {
+function DealCard({
+  deal,
+  mode,
+  onOpenProduct,
+}: {
+  deal: Deal;
+  mode: "discount" | "drop";
+  onOpenProduct: (product: Product) => void;
+}) {
   const platform = PLATFORM_STYLE[deal.platform] || { bg: "#eee", fg: "#333" };
   const product = PRODUCTS.find((p) => p.product_id === deal.product_id);
 
-  const badgeText = mode === "discount" ? `-${Math.round(deal.discount_pct)}%` : `-฿${fmtBaht(Math.round(deal.drop_amount))}`;
+  const badgeText =
+    mode === "discount" ? `-${Math.round(deal.discount_pct ?? 0)}%` : `-฿${fmtBaht(Math.round(deal.drop_amount ?? 0))}`;
 
   return (
     <div
@@ -1050,7 +1010,7 @@ function DealCard({ deal, mode, onOpenProduct }) {
     >
       <div className="relative" style={{ background: T.paper }}>
         {deal.image ? (
-          <img src={deal.image} alt={deal.product_name} className="h-36 w-full object-contain p-5" />
+          <img src={resolveImageUrl(deal.image)} alt={deal.product_name} className="h-36 w-full object-contain p-5" />
         ) : (
           <div className="flex h-36 w-full items-center justify-center text-xs" style={{ background: T.bgVia, color: T.inkSoft }}>
             ไม่มีรูปสินค้า
@@ -1080,7 +1040,7 @@ function DealCard({ deal, mode, onOpenProduct }) {
             ฿{fmtBaht(Math.round(deal.current_price))}
           </span>
           <span className="text-xs line-through" style={{ color: T.inkSoft }}>
-            ฿{fmtBaht(Math.round(mode === "discount" ? deal.original_price : deal.previous_price))}
+            ฿{fmtBaht(Math.round((mode === "discount" ? deal.original_price : deal.previous_price) ?? 0))}
           </span>
         </div>
 
@@ -1098,10 +1058,15 @@ function DealCard({ deal, mode, onOpenProduct }) {
   );
 }
 
+interface DealsState {
+  status: "loading" | "success" | "error";
+  deals: Deal[];
+}
+
 // STEP 5: Dashboard หลัก - แท็บสลับ "ลดแรงสุด" / "ราคาตกล่าสุด" + grid การ์ด + loading/empty state
-function TopDealDashboard({ onOpenProduct }) {
+function TopDealDashboard({ onOpenProduct }: { onOpenProduct: (product: Product) => void }) {
   const [tab, setTab] = useState("discount"); // "discount" | "drop"
-  const [state, setState] = useState({ status: "loading", deals: [] });
+  const [state, setState] = useState<DealsState>({ status: "loading", deals: [] });
 
   useEffect(() => {
     let cancelled = false;
@@ -1185,10 +1150,20 @@ function TopDealDashboard({ onOpenProduct }) {
   );
 }
 
-function FavoriteHeart({ active, onToggle, size = 18, floating = true }) {
+function FavoriteHeart({
+  active,
+  onToggle,
+  size = 18,
+  floating = true,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  size?: number;
+  floating?: boolean;
+}) {
   const [bounce, setBounce] = useState(false);
 
-  const handleClick = (e) => {
+  const handleClick = (e: ReactMouseEvent) => {
     e.stopPropagation();
     onToggle();
     setBounce(true);
@@ -1225,7 +1200,17 @@ function FavoriteHeart({ active, onToggle, size = 18, floating = true }) {
   );
 }
 
-function ProductCard({ product, onOpen, isFavorite, onToggleFavorite }) {
+function ProductCard({
+  product,
+  onOpen,
+  isFavorite,
+  onToggleFavorite,
+}: {
+  product: Product;
+  onOpen: (product: Product) => void;
+  isFavorite: boolean;
+  onToggleFavorite: (productId: string) => void;
+}) {
   return (
     <div
       role="button"
@@ -1247,7 +1232,7 @@ function ProductCard({ product, onOpen, isFavorite, onToggleFavorite }) {
     >
       <div className="relative overflow-hidden" style={{ background: T.paper }}>
         <img
-          src={product.image}
+          src={resolveImageUrl(product.image)}
           alt={product.product_name}
           className="h-52 w-full object-contain p-6 transition-transform duration-500 ease-out group-hover:scale-110 sm:h-44"
         />
@@ -1272,7 +1257,7 @@ function ProductCard({ product, onOpen, isFavorite, onToggleFavorite }) {
           </span>
           {minPrice(product.listings) !== null ? (
             <span style={{ fontFamily: "'Fraunces', serif", color: T.pinkText }} className="text-xl font-bold">
-              ฿{fmtBaht(minPrice(product.listings))}
+              ฿{fmtBaht(minPrice(product.listings) ?? 0)}
             </span>
           ) : (
             <span style={{ fontFamily: "'Fraunces', serif", color: T.inkSoft }} className="text-xl font-bold">
@@ -1285,12 +1270,12 @@ function ProductCard({ product, onOpen, isFavorite, onToggleFavorite }) {
   );
 }
 
-function ListingRow({ listing, isBest }) {
+function ListingRow({ listing, isBest }: { listing: Listing; isBest: boolean }) {
   const platform = PLATFORM_STYLE[listing.platform] || { bg: "#eee", fg: "#333" };
   const hasPrice = listing.net_price !== null && listing.net_price !== undefined;
   const isOutOfStock = listing.in_stock === false || !hasPrice;
-  const changeUp = !isOutOfStock && listing.price_change > 0;
-  const changeDown = !isOutOfStock && listing.price_change < 0;
+  const changeUp = !isOutOfStock && (listing.price_change ?? 0) > 0;
+  const changeDown = !isOutOfStock && (listing.price_change ?? 0) < 0;
 
   return (
     <div
@@ -1335,13 +1320,13 @@ function ListingRow({ listing, isBest }) {
               {changeDown && (
                 <span className="flex items-center gap-0.5" style={{ color: T.green }}>
                   <ArrowDown size={12} strokeWidth={3} />
-                  ลดลง ฿{fmtBaht(Math.abs(listing.price_change))}
+                  ลดลง ฿{fmtBaht(Math.abs(listing.price_change ?? 0))}
                 </span>
               )}
               {changeUp && (
                 <span className="flex items-center gap-0.5" style={{ color: T.red }}>
                   <ArrowUp size={12} strokeWidth={3} />
-                  เพิ่มขึ้น ฿{fmtBaht(listing.price_change)}
+                  เพิ่มขึ้น ฿{fmtBaht(listing.price_change ?? 0)}
                 </span>
               )}
               {!changeUp && !changeDown && (
@@ -1362,7 +1347,7 @@ function ListingRow({ listing, isBest }) {
               {listing.coupon !== undefined && listing.coupon > 0 && <span>คูปองลด ฿{fmtBaht(listing.coupon)}</span>}
               {listing.coupon > 0 && listing.shipping !== undefined && <span>·</span>}
               {listing.shipping !== undefined && (
-                <span>{listing.shipping === 0 ? "ส่งฟรี" : `ค่าส่ง ฿${fmtBaht(listing.shipping)}`}</span>
+                <span>{listing.shipping === 0 ? "ส่งฟรี" : `ค่าส่ง ฿${fmtBaht(listing.shipping ?? 0)}`}</span>
               )}
             </div>
           )}
@@ -1373,7 +1358,7 @@ function ListingRow({ listing, isBest }) {
         {isOutOfStock ? (
           hasPrice ? (
             <span className="text-base font-bold line-through md:text-lg" style={{ color: T.inkSoft }}>
-              ฿{fmtBaht(listing.net_price)}
+              ฿{fmtBaht(listing.net_price ?? 0)}
             </span>
           ) : (
             <span className="text-base font-bold md:text-lg" style={{ color: T.inkSoft }}>
@@ -1382,7 +1367,7 @@ function ListingRow({ listing, isBest }) {
           )
         ) : (
           <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-xl font-bold md:text-2xl">
-            ฿{fmtBaht(listing.net_price)}
+            ฿{fmtBaht(listing.net_price ?? 0)}
           </span>
         )}
         {isOutOfStock ? (
@@ -1412,7 +1397,21 @@ function ListingRow({ listing, isBest }) {
   );
 }
 
-function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite, onSelectRelated }) {
+function ProductModal({
+  product,
+  visible,
+  onClose,
+  isFavorite,
+  onToggleFavorite,
+  onSelectRelated,
+}: {
+  product: Product | null;
+  visible: boolean;
+  onClose: () => void;
+  isFavorite: boolean;
+  onToggleFavorite: (productId: string) => void;
+  onSelectRelated: (product: Product) => void;
+}) {
   // iOS/iPadOS Safari คำนวณหน่วย vh ผิดพลาดเมื่ออยู่ใน iframe (เช่น Claude Artifacts) โดยเฉพาะตอนหมุนจอ
   // จึงวัดความสูงจอจริงด้วย JS แทนพึ่งพา CSS vh อย่างเดียว แล้วอัปเดตทุกครั้งที่ resize/orientation เปลี่ยน
   const [viewportHeight, setViewportHeight] = useState(() =>
@@ -1436,7 +1435,7 @@ function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite,
 
   const modalMaxHeightPx = Math.round(viewportHeight * 0.9);
 
-  const sortedListings = useMemo(() => {
+  const sortedListings = useMemo<Listing[]>(() => {
     if (!product) return [];
     return [...product.listings].sort((a, b) => {
       const aOut = a.in_stock === false || a.net_price === null || a.net_price === undefined;
@@ -1446,11 +1445,11 @@ function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite,
       if (!aOut && bOut) return -1;
       if (aOut && bOut) return 0;
       // ร้านที่มีของ (in stock) เรียงราคาถูกไปแพงตามปกติ
-      return a.net_price - b.net_price;
+      return (a.net_price ?? 0) - (b.net_price ?? 0);
     });
   }, [product]);
 
-  const relatedProducts = useMemo(() => {
+  const relatedProducts = useMemo<Product[]>(() => {
     if (!product) return [];
     return getRelatedProducts(product.product_id);
   }, [product]);
@@ -1499,7 +1498,9 @@ function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite,
             onClick={onClose}
             aria-label="ปิดหน้าต่าง"
             className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full transition-transform duration-150 hover:scale-110 sm:h-9 sm:w-9"
-            style={{ background: T.blueSoft }}
+            // NOTE: T.blueSoft does not exist on the T design-token object (pre-existing bug, left
+            // as-is per this pass's scope - see report). Cast so this compiles as `undefined` like before.
+            style={{ background: (T as Record<string, string>).blueSoft }}
           >
             <X size={18} color={T.inkStrong} strokeWidth={2.5} />
           </button>
@@ -1507,7 +1508,7 @@ function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite,
 
         <div className="relative flex-shrink-0" style={{ background: T.bgTo }}>
           <img
-            src={product.image}
+            src={resolveImageUrl(product.image)}
             alt={product.product_name}
             className="h-56 w-full object-contain p-6 sm:h-64"
           />
@@ -1576,14 +1577,17 @@ function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite,
                     style={{ background: T.bgVia, border: `1px solid ${T.blueLine}` }}
                   >
                     <div className="h-20 w-full" style={{ background: T.paper }}>
-                      <img src={rp.image} alt={rp.product_name} className="h-full w-full object-contain p-2" />
+                      <img src={resolveImageUrl(rp.image)} alt={rp.product_name} className="h-full w-full object-contain p-2" />
                     </div>
                     <div className="flex flex-col gap-0.5 px-2 py-2">
                       <span className="truncate text-[11px] font-semibold leading-tight" style={{ color: T.inkStrong }}>
                         {rp.product_name}
                       </span>
                       <span style={{ fontFamily: "'Fraunces', serif", color: T.pinkText }} className="text-xs font-bold">
-                        ฿{fmtBaht(minPrice(rp.listings))}
+                        {/* NOTE: unlike the ProductCard use of minPrice() elsewhere, this one has no
+                        null-guard - if minPrice() is null (all listings out of stock) fmtBaht(null) would
+                        throw at runtime. Pre-existing gap, left as-is per this pass's scope - see report. */}
+                        ฿{fmtBaht(minPrice(rp.listings) ?? 0)}
                       </span>
                     </div>
                   </button>
@@ -1604,11 +1608,36 @@ function ProductModal({ product, visible, onClose, isFavorite, onToggleFavorite,
 // เป็นการ "อนุมาน" จากโครงสร้างข้อมูลที่ frontend ใช้อยู่แล้ว (ดู PRODUCTS array ด้านบน)
 // กรุณาปรับชื่อคอลัมน์ให้ตรงกับ schema จริงของคุณถ้าไม่ตรงกัน (ดูคำอธิบายเพิ่มเติมในไฟล์ admin_routes.py ที่แนบมาด้วย)
 
+// Generic row shape for the admin CRUD tables/forms below - fields vary per entity
+// (see ADMIN_ENTITIES), so this stays loosely typed by design rather than one interface per table.
+type AdminRow = Record<string, any>;
+
+interface AdminEntityField {
+  name: string;
+  label: string;
+  type: "text" | "number" | "textarea" | "checkbox";
+  required?: boolean;
+  readOnlyOnEdit?: boolean;
+  placeholder?: string;
+}
+
+interface AdminEntityConfig {
+  label: string;
+  endpoint: string;
+  idField: string;
+  fields: AdminEntityField[];
+}
+
 // STEP 1: Generic fetch helper สำหรับเรียก POST / PUT / DELETE ไปที่ FastAPI backend
-async function apiRequest(method, url, body) {
+// adminToken ถูกเซ็ตหลัง login สำเร็จ (ดู AdminLoginForm) แล้วแนบเป็น Bearer token ให้ทุก request อัตโนมัติ
+let adminToken: string | null = null;
+
+async function apiRequest(method: string, url: string, body?: unknown): Promise<any> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
   const res = await fetch(url, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -1629,7 +1658,7 @@ async function apiRequest(method, url, body) {
 
 // STEP 2: นิยามฟิลด์ของแต่ละตาราง ใช้ขับเคลื่อนทั้งตาราง list และฟอร์ม Add/Edit แบบ generic
 // (ไม่ต้องเขียนฟอร์มแยกทีละตาราง) - endpoint ต้องตรงกับที่เพิ่มใน backend (ดู admin_routes.py)
-const ADMIN_ENTITIES = {
+const ADMIN_ENTITIES: Record<string, AdminEntityConfig> = {
   products: {
     label: "สินค้า (Products)",
     endpoint: `${API_BASE}/api/admin/products`,
@@ -1671,23 +1700,26 @@ const ADMIN_ENTITIES = {
   },
 };
 
-// STEP 3: หน้า Login แบบง่าย - ไม่ใช่ระบบ auth จริง (ไม่มี JWT/session/hash รหัสผ่าน)
-// แค่เช็ค username/password ฝั่ง frontend ตรงๆ เพื่อสลับโหมด user/admin ตามที่โจทย์ระบุว่า "ไม่ต้องจริงจัง"
-// ⚠️ ห้ามใช้แบบนี้ตอน production จริง ต้องต่อระบบ auth จริง (เช่น JWT + hash รหัสผ่านในฝั่ง backend) ก่อนเปิดใช้งานจริง
-const DEMO_ADMIN_CREDENTIALS = { username: "admin", password: "admin123" };
-
-function AdminLoginForm({ onLoginSuccess, onCancel }) {
+// STEP 3: หน้า Login - เรียก POST /api/admin/login จริง ตรวจสอบกับตาราง admins (bcrypt hash) ใน Postgres
+// สำเร็จแล้วได้ bearer token กลับมา เก็บไว้ใน adminToken (ดู apiRequest ด้านบน) เพื่อแนบไปกับทุก request ของหน้า admin ต่อจากนี้
+function AdminLoginForm({ onLoginSuccess, onCancel }: { onLoginSuccess: () => void; onCancel: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (username === DEMO_ADMIN_CREDENTIALS.username && password === DEMO_ADMIN_CREDENTIALS.password) {
-      setError("");
+    setError("");
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("POST", `${API_BASE}/api/admin/login`, { username, password });
+      adminToken = data.access_token;
       onLoginSuccess();
-    } else {
-      setError("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");
+    } catch (err) {
+      setError((err as Error).message || "เข้าสู่ระบบไม่สำเร็จ");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -1739,11 +1771,12 @@ function AdminLoginForm({ onLoginSuccess, onCancel }) {
 
         <button
           type="submit"
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-sm font-bold text-white"
+          disabled={submitting}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
           style={{ background: T.pinkHeart }}
         >
           <LogIn size={15} />
-          เข้าสู่ระบบ
+          {submitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
         </button>
 
         <button
@@ -1760,9 +1793,19 @@ function AdminLoginForm({ onLoginSuccess, onCancel }) {
 }
 
 // STEP 4: ฟอร์ม Add/Edit แบบ generic ขับเคลื่อนด้วย field config ของแต่ละ entity
-function AdminEntityForm({ config, initialValues, onSave, onCancel }) {
-  const [values, setValues] = useState(() => {
-    const base = {};
+function AdminEntityForm({
+  config,
+  initialValues,
+  onSave,
+  onCancel,
+}: {
+  config: AdminEntityConfig;
+  initialValues: AdminRow | null;
+  onSave: (values: AdminRow) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [values, setValues] = useState<AdminRow>(() => {
+    const base: AdminRow = {};
     config.fields.forEach((f) => {
       base[f.name] = initialValues ? initialValues[f.name] ?? "" : f.type === "checkbox" ? true : "";
     });
@@ -1771,13 +1814,13 @@ function AdminEntityForm({ config, initialValues, onSave, onCancel }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const handleChange = (field, raw) => {
+  const handleChange = (field: AdminEntityField, raw: any) => {
     let val = raw;
     if (field.type === "number") val = raw === "" ? "" : Number(raw);
     setValues((prev) => ({ ...prev, [field.name]: val }));
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const missing = config.fields.find((f) => f.required && (values[f.name] === "" || values[f.name] === undefined || values[f.name] === null));
     if (missing) {
@@ -1789,7 +1832,7 @@ function AdminEntityForm({ config, initialValues, onSave, onCancel }) {
     try {
       await onSave(values);
     } catch (err) {
-      setError(err.message || "บันทึกไม่สำเร็จ");
+      setError((err as Error).message || "บันทึกไม่สำเร็จ");
     } finally {
       setSaving(false);
     }
@@ -1889,12 +1932,17 @@ function AdminEntityForm({ config, initialValues, onSave, onCancel }) {
 }
 
 // STEP 5: ตาราง list + ปุ่ม เพิ่ม/แก้ไข/ลบ ของ 1 entity - ใช้ config เดียวกับฟอร์มด้านบน
-function AdminEntityTable({ entityKey }) {
+interface AdminTableState {
+  status: "loading" | "success" | "error";
+  rows: AdminRow[];
+}
+
+function AdminEntityTable({ entityKey }: { entityKey: string }) {
   const config = ADMIN_ENTITIES[entityKey];
-  const [state, setState] = useState({ status: "loading", rows: [] });
+  const [state, setState] = useState<AdminTableState>({ status: "loading", rows: [] });
   const [formOpen, setFormOpen] = useState(false);
-  const [editingRow, setEditingRow] = useState(null);
-  const [deletingRow, setDeletingRow] = useState(null);
+  const [editingRow, setEditingRow] = useState<AdminRow | null>(null);
+  const [deletingRow, setDeletingRow] = useState<AdminRow | null>(null);
   const [actionError, setActionError] = useState("");
 
   const loadRows = useCallback(() => {
@@ -1908,7 +1956,7 @@ function AdminEntityTable({ entityKey }) {
     loadRows();
   }, [loadRows]);
 
-  const handleSave = async (values) => {
+  const handleSave = async (values: AdminRow) => {
     if (editingRow) {
       await apiRequest("PUT", `${config.endpoint}/${editingRow[config.idField]}`, values);
     } else {
@@ -1922,11 +1970,11 @@ function AdminEntityTable({ entityKey }) {
   const handleDelete = async () => {
     setActionError("");
     try {
-      await apiRequest("DELETE", `${config.endpoint}/${deletingRow[config.idField]}`);
+      await apiRequest("DELETE", `${config.endpoint}/${deletingRow![config.idField]}`);
       setDeletingRow(null);
       loadRows();
     } catch (err) {
-      setActionError(err.message || "ลบไม่สำเร็จ");
+      setActionError((err as Error).message || "ลบไม่สำเร็จ");
     }
   };
 
@@ -2071,7 +2119,7 @@ function AdminEntityTable({ entityKey }) {
 }
 
 // STEP 6: หน้า Dashboard หลักของแอดมิน - สลับ 3 แท็บ + ปุ่มดูตัวอย่างหน้า User + ออกจากระบบ
-function AdminDashboard({ onPreviewUser, onLogout }) {
+function AdminDashboard({ onPreviewUser, onLogout }: { onPreviewUser: () => void; onLogout: () => void }) {
   const [tab, setTab] = useState("products");
 
   return (
@@ -2136,26 +2184,26 @@ function AdminDashboard({ onPreviewUser, onLogout }) {
 // เพื่อให้ทุกจุดในแอป (ProductCard, ตัวกรอง, Top Deal Dashboard ฯลฯ) เห็นข้อมูลใหม่โดยไม่ต้องแก้โค้ดเดิม
 // ต้องมี endpoint นี้ที่ backend: GET /api/products คืนค่าเป็น array รูปแบบเดียวกับ PRODUCTS ที่ประกาศไว้ด้านบนเป๊ะๆ
 // (product_id, brand, model_number, product_name, image, specs, listings: [...]) - ดู admin_routes.py ที่แนบมา
-async function fetchLiveProducts() {
+async function fetchLiveProducts(): Promise<Product[]> {
   const data = await apiRequest("GET", `${API_BASE}/api/products`);
   if (Array.isArray(data)) {
-    PRODUCTS.splice(0, PRODUCTS.length, ...data);
+    PRODUCTS.splice(0, PRODUCTS.length, ...(data as Product[]));
   }
   return PRODUCTS;
 }
 
 function UserApp() {
   const [query, setQuery] = useState("");
-  const [favorites, setFavorites] = useState(() => new Set());
+  const [favorites, setFavorites] = useState<Set<string>>(() => new Set());
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [activeCategory, setActiveCategory] = useState("all");
   const [activePriceRange, setActivePriceRange] = useState("all");
   const [budgetInput, setBudgetInput] = useState(""); // เก็บเป็น string เพื่อให้ควบคุมช่องว่าง/ค่าลบได้ตรงตามที่พิมพ์
-  const [activeProduct, setActiveProduct] = useState(null);
+  const [activeProduct, setActiveProduct] = useState<Product | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
 
   // ป้องกันไม่ให้กรอกค่าติดลบ: อนุญาตให้ลบจนว่างได้ (ไม่กรอง) แต่ปฏิเสธค่าที่น้อยกว่า 0
-  const handleBudgetChange = useCallback((e) => {
+  const handleBudgetChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
     if (raw === "") {
       setBudgetInput("");
@@ -2168,7 +2216,7 @@ function UserApp() {
 
   const budgetValue = budgetInput.trim() === "" ? 0 : Number(budgetInput);
 
-  const toggleFavorite = useCallback((productId) => {
+  const toggleFavorite = useCallback((productId: string) => {
     setFavorites((prev) => {
       const next = new Set(prev);
       if (next.has(productId)) next.delete(productId);
@@ -2192,7 +2240,7 @@ function UserApp() {
       const range = PRICE_RANGES.find((r) => r.id === activePriceRange);
       list = list.filter((p) => {
         const price = bestValuePrice(p.listings);
-        return price !== null && range.test(price);
+        return price !== null && range!.test(price);
       });
     }
     // ตัวกรองงบประมาณ: เทียบกับ "ราคาสุทธิที่ถูกที่สุด" ของสินค้า (ร้านที่มีของก่อนเสมอ เหมือนตรรกะ Best Value)
@@ -2223,7 +2271,7 @@ function UserApp() {
     setShowFavoritesOnly(false);
   }, []);
 
-  const openModal = useCallback((product) => {
+  const openModal = useCallback((product: Product) => {
     setActiveProduct(product);
     requestAnimationFrame(() => requestAnimationFrame(() => setModalVisible(true)));
     try {
@@ -2239,7 +2287,7 @@ function UserApp() {
   }, []);
 
   const handleSwitchProduct = useCallback(
-    (nextProduct) => {
+    (nextProduct: Product) => {
       setModalVisible(false);
       setTimeout(() => {
         openModal(nextProduct);
@@ -2262,7 +2310,7 @@ function UserApp() {
 
   useEffect(() => {
     if (!activeProduct) return;
-    const onKeyDown = (e) => {
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") handleClose();
     };
     const onPopState = () => closeModal();
@@ -2508,6 +2556,7 @@ export default function App() {
       <AdminDashboard
         onPreviewUser={goPreviewUser}
         onLogout={() => {
+          adminToken = null;
           setAuthRole("guest");
           setViewMode("user");
         }}
