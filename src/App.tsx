@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import type { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, Eye, ShieldCheck } from "lucide-react";
+import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, ShieldCheck, User } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // ---- domain types (match the FastAPI response shapes in koomsure-backend) ----
@@ -1628,13 +1628,20 @@ interface AdminEntityConfig {
   fields: AdminEntityField[];
 }
 
+// บัญชีเดียวใช้ทุกที่ (ลูกค้าทั่วไป/แอดมิน แยกกันด้วย role ไม่ใช่ระบบ login คนละชุด) - เก็บ session ใน
+// localStorage เสมอ ทั้งฝั่ง UserApp (ปุ่มเข้าสู่ระบบใน navbar) และฝั่ง /admin (ดู App() ด้านล่าง)
+const USER_TOKEN_STORAGE_KEY = "koomsure_user_token";
+const USER_EMAIL_STORAGE_KEY = "koomsure_user_email";
+const USER_ROLE_STORAGE_KEY = "koomsure_user_role";
+
 // STEP 1: Generic fetch helper สำหรับเรียก POST / PUT / DELETE ไปที่ FastAPI backend
-// adminToken ถูกเซ็ตหลัง login สำเร็จ (ดู AdminLoginForm) แล้วแนบเป็น Bearer token ให้ทุก request อัตโนมัติ
-let adminToken: string | null = null;
+// authToken ตั้งค่าจาก localStorage ตั้งแต่โหลดไฟล์เลย (ไม่ต้องรอ React state) แล้วแนบเป็น Bearer token
+// ให้ทุก request อัตโนมัติ - ใช้โดย apiRequest (admin CRUD) เท่านั้น ฝั่ง favorites ใช้ fetch ตรงๆ แยกต่างหาก
+let authToken: string | null = localStorage.getItem(USER_TOKEN_STORAGE_KEY);
 
 async function apiRequest(method: string, url: string, body?: unknown): Promise<any> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (adminToken) headers["Authorization"] = `Bearer ${adminToken}`;
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
   const res = await fetch(url, {
     method,
     headers,
@@ -1699,98 +1706,6 @@ const ADMIN_ENTITIES: Record<string, AdminEntityConfig> = {
     ],
   },
 };
-
-// STEP 3: หน้า Login - เรียก POST /api/admin/login จริง ตรวจสอบกับตาราง admins (bcrypt hash) ใน Postgres
-// สำเร็จแล้วได้ bearer token กลับมา เก็บไว้ใน adminToken (ดู apiRequest ด้านบน) เพื่อแนบไปกับทุก request ของหน้า admin ต่อจากนี้
-function AdminLoginForm({ onLoginSuccess, onCancel }: { onLoginSuccess: () => void; onCancel: () => void }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSubmitting(true);
-    try {
-      const data = await apiRequest("POST", `${API_BASE}/api/admin/login`, { username, password });
-      adminToken = data.access_token;
-      onLoginSuccess();
-    } catch (err) {
-      setError((err as Error).message || "เข้าสู่ระบบไม่สำเร็จ");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="flex min-h-screen items-center justify-center p-4" style={{ background: `linear-gradient(160deg, ${T.bgFrom} 0%, ${T.bgVia} 45%, ${T.bgTo} 100%)` }}>
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-3xl p-7"
-        style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 30px 60px -20px rgba(148,116,196,0.4)" }}
-      >
-        <div className="mb-5 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-2xl font-bold" style={{ background: T.pink, color: T.pinkText, fontFamily: "'Fraunces', serif" }}>
-            K
-          </div>
-          <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-lg font-bold">
-            เข้าสู่ระบบแอดมิน
-          </span>
-        </div>
-
-        <label className="mb-1 block text-xs font-bold" style={{ color: T.inkStrong }}>
-          ชื่อผู้ใช้
-        </label>
-        <input
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          className="mb-3 w-full rounded-xl px-3.5 py-2.5 text-sm outline-none"
-          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
-          placeholder="admin"
-        />
-
-        <label className="mb-1 block text-xs font-bold" style={{ color: T.inkStrong }}>
-          รหัสผ่าน
-        </label>
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="mb-2 w-full rounded-xl px-3.5 py-2.5 text-sm outline-none"
-          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
-          placeholder="••••••••"
-        />
-
-        {error && (
-          <p className="mb-2 flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
-            <AlertCircle size={13} />
-            {error}
-          </p>
-        )}
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
-          style={{ background: T.pinkHeart }}
-        >
-          <LogIn size={15} />
-          {submitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
-        </button>
-
-        <button
-          type="button"
-          onClick={onCancel}
-          className="mt-3 w-full text-center text-xs font-semibold underline"
-          style={{ color: T.inkSoft }}
-        >
-          กลับหน้าเว็บปกติ
-        </button>
-      </form>
-    </div>
-  );
-}
 
 // STEP 4: ฟอร์ม Add/Edit แบบ generic ขับเคลื่อนด้วย field config ของแต่ละ entity
 function AdminEntityForm({
@@ -2118,8 +2033,8 @@ function AdminEntityTable({ entityKey }: { entityKey: string }) {
   );
 }
 
-// STEP 6: หน้า Dashboard หลักของแอดมิน - สลับ 3 แท็บ + ปุ่มดูตัวอย่างหน้า User + ออกจากระบบ
-function AdminDashboard({ onPreviewUser, onLogout }: { onPreviewUser: () => void; onLogout: () => void }) {
+// STEP 6: หน้า Dashboard หลักของแอดมิน - สลับ 3 แท็บ + ลิงก์ดูหน้าร้านจริง (เปิดแท็บใหม่) + ออกจากระบบ
+function AdminDashboard({ onLogout }: { onLogout: () => void }) {
   const [tab, setTab] = useState("products");
 
   return (
@@ -2133,14 +2048,18 @@ function AdminDashboard({ onPreviewUser, onLogout }: { onPreviewUser: () => void
             </span>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={onPreviewUser}
+            {/* ลิงก์ธรรมดา เปิดแท็บใหม่ ไม่ใช่ "preview" แบบ mock - หน้าร้านจริงต่อ DB เดียวกันอยู่แล้วจึงเห็นข้อมูลล่าสุดเสมอ
+                ไม่ต้องมีกลไกพิเศษมาคอย sync/refetch ให้แอดมิน */}
+            <a
+              href="/"
+              target="_blank"
+              rel="noopener noreferrer"
               className="flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-bold"
               style={{ background: T.blue, color: T.inkStrong }}
             >
-              <Eye size={14} />
-              ดูตัวอย่างหน้าแอป
-            </button>
+              <ExternalLink size={14} />
+              ดูหน้าร้าน
+            </a>
             <button
               onClick={onLogout}
               className="flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-bold"
@@ -2192,6 +2111,181 @@ async function fetchLiveProducts(): Promise<Product[]> {
   return PRODUCTS;
 }
 
+// ============================================================================
+// FEATURE: บัญชีผู้ใช้ (บัญชีเดียวกันทั้งลูกค้าทั่วไปและแอดมิน แยกกันด้วย role จาก DB เท่านั้น)
+// จุดประสงค์หลักฝั่งลูกค้าทั่วไปคือให้ "รายการโปรด" ผูกกับบัญชีจริง อยู่ถาวรข้าม login/logout/เครื่องอื่น
+// เก็บ token ไว้ใน localStorage เสมอ (ดู USER_TOKEN_STORAGE_KEY - ใช้ร่วมกันทั้ง UserApp และ App()'s /admin)
+// ============================================================================
+interface AuthResult {
+  access_token: string;
+  token_type: string;
+  email: string;
+  role: string;
+}
+
+async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const errJson = await res.json();
+    if (errJson && typeof errJson.detail === "string") return errJson.detail;
+  } catch {
+    /* response ไม่ใช่ JSON ก็ใช้ข้อความ default ไป */
+  }
+  return fallback;
+}
+
+async function registerUser(email: string, password: string): Promise<AuthResult> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "สมัครสมาชิกไม่สำเร็จ"));
+  return res.json() as Promise<AuthResult>;
+}
+
+async function loginUser(email: string, password: string): Promise<AuthResult> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "เข้าสู่ระบบไม่สำเร็จ"));
+  return res.json() as Promise<AuthResult>;
+}
+
+async function fetchFavorites(token: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/api/favorites`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "โหลดรายการโปรดไม่สำเร็จ"));
+  return res.json() as Promise<string[]>;
+}
+
+async function addFavoriteRemote(token: string, productId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/favorites/${productId}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "บันทึกรายการโปรดไม่สำเร็จ"));
+}
+
+async function removeFavoriteRemote(token: string, productId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/favorites/${productId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "ลบรายการโปรดไม่สำเร็จ"));
+}
+
+// ฟอร์ม login/สมัครสมาชิกแบบเดียว ใช้ร่วมกันทั้งลูกค้าทั่วไป (ปุ่มใน navbar) และแอดมิน (หน้า /admin) -
+// บัญชีเดียวกันหมด สลับโหมดด้วยปุ่มลิงก์ด้านล่าง - เปิดเป็น modal ทับหน้าปัจจุบัน
+function UserAuthForm({
+  onSuccess,
+  onCancel,
+}: {
+  onSuccess: (token: string, email: string, role: string) => void;
+  onCancel: () => void;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      const data = mode === "login" ? await loginUser(email, password) : await registerUser(email, password);
+      onSuccess(data.access_token, data.email, data.role);
+    } catch (err) {
+      setError((err as Error).message || "เกิดข้อผิดพลาด");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      style={{ background: "rgba(51,65,85,0.45)" }}
+      onClick={onCancel}
+    >
+      <form
+        onSubmit={handleSubmit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm rounded-3xl p-7"
+        style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 30px 60px -20px rgba(148,116,196,0.4)" }}
+      >
+        <div className="mb-5 flex items-center gap-2">
+          <div className="flex h-9 w-9 items-center justify-center rounded-2xl font-bold" style={{ background: T.pink, color: T.pinkText, fontFamily: "'Fraunces', serif" }}>
+            K
+          </div>
+          <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-lg font-bold">
+            {mode === "login" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
+          </span>
+        </div>
+
+        <label className="mb-1 block text-xs font-bold" style={{ color: T.inkStrong }}>
+          อีเมล
+        </label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="mb-3 w-full rounded-xl px-3.5 py-2.5 text-sm outline-none"
+          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+          placeholder="you@example.com"
+        />
+
+        <label className="mb-1 block text-xs font-bold" style={{ color: T.inkStrong }}>
+          รหัสผ่าน
+        </label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="mb-2 w-full rounded-xl px-3.5 py-2.5 text-sm outline-none"
+          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+          placeholder="••••••••"
+        />
+
+        {error && (
+          <p className="mb-2 flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
+            <AlertCircle size={13} />
+            {error}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={submitting}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+          style={{ background: T.pinkHeart }}
+        >
+          <LogIn size={15} />
+          {submitting ? "กำลังดำเนินการ..." : mode === "login" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setMode(mode === "login" ? "register" : "login");
+            setError("");
+          }}
+          className="mt-3 w-full text-center text-xs font-semibold underline"
+          style={{ color: T.inkSoft }}
+        >
+          {mode === "login" ? "ยังไม่มีบัญชี? สมัครสมาชิก" : "มีบัญชีอยู่แล้ว? เข้าสู่ระบบ"}
+        </button>
+
+        <button type="button" onClick={onCancel} className="mt-2 w-full text-center text-xs font-semibold" style={{ color: T.inkSoft }}>
+          ยกเลิก
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function UserApp() {
   const [query, setQuery] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(() => new Set());
@@ -2201,6 +2295,60 @@ function UserApp() {
   const [budgetInput, setBudgetInput] = useState(""); // เก็บเป็น string เพื่อให้ควบคุมช่องว่าง/ค่าลบได้ตรงตามที่พิมพ์
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+
+  // บัญชีผู้ใช้: session อยู่ถาวรใน localStorage (คีย์เดียวกับที่ App()'s /admin flow ใช้)
+  const [userToken, setUserToken] = useState<string | null>(() => localStorage.getItem(USER_TOKEN_STORAGE_KEY));
+  const [userEmail, setUserEmail] = useState<string | null>(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY));
+  const [userRole, setUserRole] = useState<string | null>(() => localStorage.getItem(USER_ROLE_STORAGE_KEY));
+  const [showAuthForm, setShowAuthForm] = useState(false);
+
+  // มี token ตั้งแต่ mount (restore จาก localStorage) หรือเพิ่ง login/สมัครสมาชิกสำเร็จ -> โหลดรายการโปรดจริงจาก backend
+  useEffect(() => {
+    if (!userToken) return;
+    let cancelled = false;
+    fetchFavorites(userToken)
+      .then((ids) => {
+        if (!cancelled) setFavorites(new Set(ids));
+      })
+      .catch(() => {
+        // token หมดอายุ/ไม่ถูกต้อง - เคลียร์ session ทิ้งเงียบๆ ให้ผู้ใช้ login ใหม่เอง ไม่ทำให้แอป crash
+        if (!cancelled) {
+          authToken = null;
+          setUserToken(null);
+          setUserEmail(null);
+          setUserRole(null);
+          localStorage.removeItem(USER_TOKEN_STORAGE_KEY);
+          localStorage.removeItem(USER_EMAIL_STORAGE_KEY);
+          localStorage.removeItem(USER_ROLE_STORAGE_KEY);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userToken]);
+
+  const handleAuthSuccess = useCallback((token: string, email: string, role: string) => {
+    authToken = token;
+    localStorage.setItem(USER_TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(USER_EMAIL_STORAGE_KEY, email);
+    localStorage.setItem(USER_ROLE_STORAGE_KEY, role);
+    setUserToken(token);
+    setUserEmail(email);
+    setUserRole(role);
+    setShowAuthForm(false);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    authToken = null;
+    localStorage.removeItem(USER_TOKEN_STORAGE_KEY);
+    localStorage.removeItem(USER_EMAIL_STORAGE_KEY);
+    localStorage.removeItem(USER_ROLE_STORAGE_KEY);
+    setUserToken(null);
+    setUserRole(null);
+    setUserEmail(null);
+    setFavorites(new Set());
+    setShowFavoritesOnly(false);
+  }, []);
 
   // ป้องกันไม่ให้กรอกค่าติดลบ: อนุญาตให้ลบจนว่างได้ (ไม่กรอง) แต่ปฏิเสธค่าที่น้อยกว่า 0
   const handleBudgetChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
@@ -2216,14 +2364,35 @@ function UserApp() {
 
   const budgetValue = budgetInput.trim() === "" ? 0 : Number(budgetInput);
 
-  const toggleFavorite = useCallback((productId: string) => {
-    setFavorites((prev) => {
-      const next = new Set(prev);
-      if (next.has(productId)) next.delete(productId);
-      else next.add(productId);
-      return next;
-    });
-  }, []);
+  // ต้อง login ก่อนถึงจะกดหัวใจได้ (ไม่งั้นเปิดฟอร์ม login/สมัครสมาชิกแทน) เพราะรายการโปรดผูกกับบัญชีจริงแล้ว
+  // ไม่ใช่ local state ที่หายได้เหมือนเดิม - update แบบ optimistic แล้วย้อนกลับถ้า backend ล้มเหลว
+  const toggleFavorite = useCallback(
+    (productId: string) => {
+      if (!userToken) {
+        setShowAuthForm(true);
+        return;
+      }
+      const wasFavorite = favorites.has(productId);
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        if (wasFavorite) next.delete(productId);
+        else next.add(productId);
+        return next;
+      });
+      const remoteCall = wasFavorite
+        ? removeFavoriteRemote(userToken, productId)
+        : addFavoriteRemote(userToken, productId);
+      remoteCall.catch(() => {
+        setFavorites((prev) => {
+          const next = new Set(prev);
+          if (wasFavorite) next.add(productId);
+          else next.delete(productId);
+          return next;
+        });
+      });
+    },
+    [userToken, favorites]
+  );
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -2376,6 +2545,53 @@ function UserApp() {
                   </span>
                 )}
               </button>
+
+              {/* ปุ่มบัญชีลูกค้า - ตั้งใจให้เห็นชัดเจน (ต่างจากปุ่มแอดมินที่ซ่อนไว้ทั้งหมด) เพราะผู้ใช้ทั่วไป
+                  ต้อง login เองเพื่อให้รายการโปรดผูกกับบัญชีและอยู่ถาวร ไม่มีเหตุผลต้องซ่อน */}
+              {userEmail ? (
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="hidden max-w-[140px] truncate text-xs font-semibold sm:inline"
+                    style={{ color: T.inkSoft }}
+                    title={userEmail}
+                  >
+                    {userEmail}
+                  </span>
+                  {/* เห็นเฉพาะบัญชีที่ role เป็น admin เท่านั้น (ลูกค้าทั่วไป login แล้วจะไม่เห็นปุ่มนี้เลย) -
+                      กันไม่ต้องพิมพ์ /admin เองทุกครั้งหลัง login ไปแล้ว แต่ยังไม่มีปุ่มแบบนี้ให้คนทั่วไปเห็น */}
+                  {userRole === "admin" && (
+                    <button
+                      onClick={() => {
+                        window.location.href = "/admin";
+                      }}
+                      aria-label="ไปหน้าแอดมิน"
+                      title="ไปหน้าแอดมิน"
+                      className="flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-150 sm:h-9 sm:w-9"
+                      style={{ background: T.pinkHeart, color: "#FFFFFF" }}
+                    >
+                      <ShieldCheck size={15} strokeWidth={2.4} />
+                    </button>
+                  )}
+                  <button
+                    onClick={handleLogout}
+                    aria-label="ออกจากระบบ"
+                    title="ออกจากระบบ"
+                    className="flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-150 sm:h-9 sm:w-9"
+                    style={{ background: T.paper, color: T.inkStrong, border: `1px solid ${T.blueLine}` }}
+                  >
+                    <LogOut size={15} strokeWidth={2.4} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowAuthForm(true)}
+                  className="flex items-center gap-1.5 rounded-full px-3.5 py-2.5 text-sm font-bold transition-colors duration-150 sm:px-4 sm:py-2"
+                  style={{ background: T.paper, color: T.inkStrong, border: `1px solid ${T.blueLine}` }}
+                >
+                  <User size={15} strokeWidth={2.4} />
+                  <span className="hidden sm:inline">เข้าสู่ระบบ</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -2511,6 +2727,8 @@ function UserApp() {
         onToggleFavorite={toggleFavorite}
         onSelectRelated={handleSwitchProduct}
       />
+
+      {showAuthForm && <UserAuthForm onSuccess={handleAuthSuccess} onCancel={() => setShowAuthForm(false)} />}
     </div>
   );
 }
@@ -2518,9 +2736,18 @@ function UserApp() {
 // ============================================================================
 // STEP 8: App หลัก - จัดการสถานะ role (guest/admin) และสลับหน้า user / login / admin dashboard
 // ============================================================================
+// แอดมินไม่มีปุ่ม/ไอคอนเข้าสู่ระบบโผล่อยู่บนหน้าเว็บลูกค้าเลย (ผู้ใช้ทั่วไปไม่มีทางเจอ/สับสนว่ามันคืออะไร) -
+// เข้าถึงได้ทางเดียวคือพิมพ์ path /admin ตรงๆ ใน browser ตรงตามที่เว็บ production ทั่วไปทำกัน (เช่น /wp-admin)
+// เช็คแค่ตอน mount ครั้งแรกพอ เพราะไม่มีลิงก์ภายในแอปที่พาไปหน้านี้อยู่แล้ว (ไปได้ทางเดียวคือพิมพ์ path เอง ซึ่ง reload
+// หน้าเว็บใหม่ทุกครั้งอยู่แล้ว) - ไม่ต้องเปลืองแรงทำ router/popstate listener เพิ่ม
+function isAdminPath(): boolean {
+  return window.location.pathname.startsWith("/admin");
+}
+
 export default function App() {
-  const [authRole, setAuthRole] = useState("guest"); // "guest" | "admin" (สถานะ login จริง)
-  const [viewMode, setViewMode] = useState("user"); // "user" | "login" | "dashboard" (หน้าที่กำลังแสดงอยู่)
+  // บัญชีเดียวใช้ทุกที่แล้ว (ดูคอมเมนต์ตอนประกาศ USER_TOKEN_STORAGE_KEY) - role มาจาก DB จริง ไม่ใช่คนละ
+  // ระบบ login เหมือนก่อนหน้านี้ session เลย restore จาก localStorage ได้ตรงนี้เหมือน UserApp ทุกประการ
+  const [authRole, setAuthRole] = useState<string | null>(() => localStorage.getItem(USER_ROLE_STORAGE_KEY));
   const [catalogKey, setCatalogKey] = useState(0); // bump ค่านี้เพื่อบังคับ UserApp mount ใหม่หลังข้อมูลสินค้าเปลี่ยน
 
   // โหลดแคตตาล็อกสินค้าจริงจาก backend ครั้งแรกตอนแอปเริ่มทำงาน (ก่อนหน้านี้ใช้ PRODUCTS แบบ hardcode ในไฟล์)
@@ -2532,63 +2759,60 @@ export default function App() {
       });
   }, []);
 
-  // เรียกใหม่ทุกครั้งที่แอดมินกด "ดูตัวอย่างหน้าแอป" เพื่อให้เห็นผลการแก้ไขล่าสุดทันที ตามที่โจทย์ต้องการ
-  const goPreviewUser = useCallback(() => {
-    fetchLiveProducts()
-      .then(() => setCatalogKey((k) => k + 1))
-      .finally(() => setViewMode("user"));
-  }, []);
+  const handleLogout = () => {
+    authToken = null;
+    localStorage.removeItem(USER_TOKEN_STORAGE_KEY);
+    localStorage.removeItem(USER_EMAIL_STORAGE_KEY);
+    localStorage.removeItem(USER_ROLE_STORAGE_KEY);
+    setAuthRole(null);
+  };
 
-  if (viewMode === "login") {
-    return (
-      <AdminLoginForm
-        onLoginSuccess={() => {
-          setAuthRole("admin");
-          setViewMode("dashboard");
-        }}
-        onCancel={() => setViewMode("user")}
-      />
-    );
+  if (isAdminPath()) {
+    if (!authRole) {
+      return (
+        <UserAuthForm
+          onSuccess={(token, email, role) => {
+            authToken = token;
+            localStorage.setItem(USER_TOKEN_STORAGE_KEY, token);
+            localStorage.setItem(USER_EMAIL_STORAGE_KEY, email);
+            localStorage.setItem(USER_ROLE_STORAGE_KEY, role);
+            setAuthRole(role);
+          }}
+          onCancel={() => {
+            // ออกจาก /admin ไปหน้าเว็บลูกค้าจริงๆ (เปลี่ยน URL ด้วย ไม่ใช่แค่สลับ state) ให้ address bar ตรงกับที่เห็น
+            window.location.href = "/";
+          }}
+        />
+      );
+    }
+
+    if (authRole !== "admin") {
+      // login สำเร็จแล้ว แต่บัญชีนี้ไม่ใช่แอดมิน (เช่น ลูกค้าทั่วไปหลงเข้ามาที่ /admin) - บอกตรงๆ ไม่ใช่ปล่อยผ่าน
+      return (
+        <div
+          className="flex min-h-screen flex-col items-center justify-center gap-4 p-4 text-center"
+          style={{ background: `linear-gradient(160deg, ${T.bgFrom} 0%, ${T.bgVia} 45%, ${T.bgTo} 100%)` }}
+        >
+          <p className="text-sm font-semibold" style={{ color: T.inkStrong }}>
+            บัญชีนี้ไม่มีสิทธิ์เข้าถึงหน้าแอดมิน
+          </p>
+          <button
+            onClick={() => {
+              handleLogout();
+              window.location.href = "/";
+            }}
+            className="rounded-full px-4 py-2.5 text-sm font-bold text-white"
+            style={{ background: T.pinkHeart }}
+          >
+            กลับหน้าเว็บปกติ
+          </button>
+        </div>
+      );
+    }
+
+    return <AdminDashboard onLogout={handleLogout} />;
   }
 
-  if (viewMode === "dashboard" && authRole === "admin") {
-    return (
-      <AdminDashboard
-        onPreviewUser={goPreviewUser}
-        onLogout={() => {
-          adminToken = null;
-          setAuthRole("guest");
-          setViewMode("user");
-        }}
-      />
-    );
-  }
-
-  // viewMode === "user" (ค่าเริ่มต้น) - หน้าเว็บปกติสำหรับลูกค้าทั่วไป
-  return (
-    <div className="relative">
-      <UserApp key={catalogKey} />
-
-      {authRole === "admin" ? (
-        // แอดมินที่ล็อกอินอยู่แล้วและกำลังดูตัวอย่างหน้า User: ปุ่มลอยกลับไปหน้า Dashboard
-        <button
-          onClick={() => setViewMode("dashboard")}
-          className="fixed bottom-5 right-5 z-40 flex items-center gap-1.5 rounded-full px-4 py-2.5 text-xs font-bold text-white shadow-lg"
-          style={{ background: T.pinkHeart }}
-        >
-          <ShieldCheck size={14} />
-          กลับหน้า Admin
-        </button>
-      ) : (
-        // ผู้ใช้ทั่วไป: ลิงก์เล็กๆ ไม่รบกวนสายตา ไว้ให้แอดมินกดเข้าสู่ระบบ
-        <button
-          onClick={() => setViewMode("login")}
-          className="fixed bottom-5 right-5 z-40 rounded-full px-3.5 py-2 text-[11px] font-semibold opacity-60 transition-opacity hover:opacity-100"
-          style={{ background: T.paper, color: T.inkSoft, border: `1px solid ${T.blueLine}` }}
-        >
-          เข้าสู่ระบบแอดมิน
-        </button>
-      )}
-    </div>
-  );
+  // ไม่ได้อยู่ที่ /admin - หน้าเว็บปกติสำหรับลูกค้าทั่วไป ไม่มีร่องรอยของโหมดแอดมินอยู่บนหน้านี้เลย
+  return <UserApp key={catalogKey} />;
 }
