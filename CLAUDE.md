@@ -5,6 +5,17 @@ Don't split it into multiple files/components speculatively — it works, type-c
 the project's organization effort has gone into the backend (see `../koomsure-backend/AGENTS.md`).
 Only refactor structure if actually asked to.
 
+## AI Assistant (added 2026-10-08)
+
+`AiAssistantCard` on the homepage (always visible, above `TopDealDashboard`) and
+`AiAnalyzeProductButton` inside `ProductModal` both call
+`POST /api/ai-assistant/analyze` (`fetchAiAnalysis`). The homepage card sends free text
+(`{query}}`) and the backend fuzzy-matches it to a product; the in-modal button already knows the
+exact product so it sends `{product_id}` directly — always a precise result, no matching step.
+All the analysis numbers are computed backend-side (see backend `CLAUDE.md`) — this frontend only
+renders whatever text comes back. `AiAnalyzeProductButton` is keyed by `product.product_id` so
+its state resets when switching between related products inside the same modal instance.
+
 ## Current status (as of 2026-10-07 — "final version" pass)
 
 - Wired to a real backend (`../koomsure-backend`, FastAPI + Postgres) via `API_BASE =

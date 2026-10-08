@@ -1,7 +1,18 @@
 import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
 import type { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, ShieldCheck, User } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, ShieldCheck, User, Sparkles, Loader2 } from "lucide-react";
+import {
+  LineChart,
+  Line,
+  ComposedChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
 
 // ---- domain types (match the FastAPI response shapes in koomsure-backend) ----
 interface Listing {
@@ -21,12 +32,14 @@ interface Product {
   image: string;
   specs: string;
   listings: Listing[];
+  has_price_history?: boolean; // optional: the embedded fallback PRODUCTS array below predates this field
 }
 
 interface PriceHistoryEntry {
   platform: string;
   date: string;
   price: number;
+  source: string; // "seed" | "scraper" - price-insight verdicts must only ever use "scraper"
 }
 
 interface ListingDetails {
@@ -1427,7 +1440,15 @@ function buildChartData(historyEntries: PriceHistoryEntry[]): ChartDataRow[] {
   });
 }
 
-// STEP 3: เช็คว่าข้อมูลย้อนหลัง "พอ" จะพล็อตกราฟที่มีความหมายหรือยัง (ต้องมีอย่างน้อย 2 วันที่ต่างกัน)
+// มีข้อมูลราคาย้อนหลังบันทึกไว้เลยหรือไม่ (ไม่ว่าจะกี่วันก็ตาม) - ใช้ตัดสินว่าควรแสดงกราฟหรือข้อความ "ยังไม่มีข้อมูล"
+// เลย ต่างจาก hasEnoughHistory ด้านล่างซึ่งเช็คว่าพอจะเห็น "แนวโน้ม" (เส้น) หรือยัง (ต้องมี >= 2 วัน)
+function hasAnyHistory(historyEntries: PriceHistoryEntry[]): boolean {
+  return !!historyEntries && historyEntries.length > 0;
+}
+
+// เช็คว่าข้อมูลย้อนหลัง "พอ" จะพล็อตเป็นเส้นแนวโน้มที่มีความหมายหรือยัง (ต้องมีอย่างน้อย 2 วันที่ต่างกัน) -
+// ใช้กับ MiniPriceSparkline บนการ์ดสินค้า (จุดเดียวลากเส้นแนวโน้มไม่ได้) ไม่ใช่ประตูหลักของกราฟเต็มอีกต่อไป
+// (ดู PriceHistoryChart - กราฟเต็มแสดงได้ตั้งแต่มีข้อมูล 1 วัน แค่ไม่ใช่เส้นแนวโน้มยัง)
 function hasEnoughHistory(historyEntries: PriceHistoryEntry[]): boolean {
   if (!historyEntries || historyEntries.length === 0) return false;
   const distinctDates = new Set(historyEntries.map((e) => e.date));
@@ -1460,7 +1481,9 @@ function deriveListingDetails(listing: Listing): ListingDetails {
 // เพื่อให้ Loading state / error handling ทำงานเหมือนเรียก API จริง แต่ไปอ่านข้อมูลที่ฝังในแอปแทน
 // ตอน deploy จริง ให้เปลี่ยน resolve(...) เป็น fetch(`/api/products/${productId}/price-history`).then(r => r.json())
 // (ดูตัวอย่าง Express endpoint คู่กันได้ในไฟล์ server.js ที่แนบมาด้วย)
-const API_BASE = "http://localhost:8000"; // ตอน deploy จริงเปลี่ยนเป็น URL ของ backend จริง
+// ตอน dev ใช้ localhost:8000 เป็นค่าเริ่มต้น - ตอน deploy จริงตั้ง VITE_API_BASE ใน build environment
+// (เช่น บน Render ตั้งใน Static Site's environment variables) ให้ชี้ไปที่ URL ของ backend จริงที่ deploy ไว้
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 // รูปสินค้าจาก backend เป็น relative path เช่น "/static/products/P001.jpg" (เดิมเคยเป็น base64 data URI
 // ฝังมากับข้อมูลเลยจึงไม่เคยมีปัญหานี้) ต้องต่อ API_BASE ให้เต็มก่อน ไม่งั้น browser จะ resolve path นี้
@@ -1570,29 +1593,19 @@ interface PriceHistoryState {
   data: PriceHistoryEntry[];
 }
 
-function PriceHistoryChart({ productId }: { productId: string }) {
-  const [state, setState] = useState<PriceHistoryState>({ status: "loading", data: [] });
-
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading", data: [] });
-    fetchPriceHistory(productId)
-      .then((entries) => {
-        if (cancelled) return;
-        setState({ status: "success", data: entries });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setState({ status: "error", data: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [productId]);
-
+// รับข้อมูลที่ fetch มาแล้วเป็น prop (ไม่ fetch เองข้างใน) เพราะ ProductModal ต้องใช้ entries เดียวกันนี้กับ
+// BuyNowInsight ด้วย - fetch รวมไว้ที่เดียวที่ ProductModal แทนยิง request ซ้ำสองครั้งสำหรับสินค้าเดียวกัน
+// แสดงข้อมูลย้อนหลัง "ทั้งหมด" ที่มีเสมอ ไม่มีปุ่มเลือกช่วงเวลา (7/30/90 วัน) แล้ว - ตัดออกตามที่ขอ
+function PriceHistoryChart({
+  state,
+  currentPrice,
+}: {
+  state: PriceHistoryState;
+  currentPrice: number | null;
+}) {
   if (state.status === "loading") {
     return (
-      <div className="flex h-56 animate-pulse flex-col items-center justify-center gap-2 rounded-2xl" style={{ background: T.bgVia }}>
+      <div className="flex h-64 animate-pulse flex-col items-center justify-center gap-2 rounded-2xl" style={{ background: T.bgVia }}>
         <TrendingUp size={22} style={{ color: T.inkSoft }} />
         <span className="text-xs font-medium" style={{ color: T.inkSoft }}>
           กำลังโหลดกราฟราคาย้อนหลัง...
@@ -1612,24 +1625,41 @@ function PriceHistoryChart({ productId }: { productId: string }) {
     );
   }
 
-  if (!hasEnoughHistory(state.data)) {
+  if (!hasAnyHistory(state.data)) {
     return (
       <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-2xl text-center" style={{ background: T.bgVia }}>
         <TrendingUp size={20} style={{ color: T.inkSoft }} />
         <span className="px-4 text-xs font-medium" style={{ color: T.inkSoft }}>
-          ยังไม่มีข้อมูลย้อนหลังเพียงพอ ระบบจะเก็บสถิติเพิ่มขึ้นทุกครั้งที่ scraper รัน
+          ยังไม่มีข้อมูลราคาย้อนหลังสำหรับสินค้านี้ ระบบจะเริ่มเก็บสถิติเมื่อแอดมินกดรีเฟรชราคาครั้งแรก
         </span>
       </div>
     );
   }
 
-  const chartData = buildChartData(state.data);
   const platforms = [...new Set(state.data.map((e) => e.platform))];
+  // เพิ่มคอลัมน์ "ราคาต่ำสุดรวม" ต่อวัน ไว้ใช้ทำพื้นที่แรเงาใต้กราฟ (Area) ให้เส้นดูมีน้ำหนัก สวยขึ้น
+  // โดยไม่ลบเส้นแยกตามร้านเดิมออก - ข้อมูลยังเป๊ะเหมือนเดิมทุกจุด แค่เพิ่มการนำเสนอ
+  const chartData = buildChartData(state.data).map((row) => {
+    const values = platforms.map((p) => row[p]).filter((v): v is number => typeof v === "number");
+    return { ...row, __overallMin__: values.length ? Math.min(...values) : null };
+  });
 
   return (
-    <div className="rounded-2xl p-3" style={{ background: T.bgVia }}>
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+    <div className="rounded-3xl p-4" style={{ background: T.bgVia }}>
+      <div className="mb-3">
+        <PriceInsightBadge entries={state.data} currentPrice={currentPrice} rangeLabel="ทั้งหมด" />
+      </div>
+
+      {/* ข้อมูลมีจริงแต่ยังแค่วันเดียว (ยังไม่พอจะเห็น "แนวโน้ม" เป็นเส้น) - บอกตามตรงแทนที่จะซ่อนกราฟไปเลย
+          หรือแต่งข้อมูลเพิ่มให้ดูมีแนวโน้ม */}
+      {!hasEnoughHistory(state.data) && (
+        <p className="mb-2 px-1 text-xs font-medium" style={{ color: T.inkSoft }}>
+          ข้อมูลตอนนี้มีแค่วันเดียว กราฟแนวโน้มจะชัดเจนขึ้นเมื่อมีการเก็บข้อมูลสะสมหลายวัน
+        </p>
+      )}
+
+      <ResponsiveContainer width="100%" height={300}>
+        <ComposedChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={T.blueLine} />
           <XAxis dataKey="date" tickFormatter={fmtDateShort} tick={{ fontSize: 11, fill: T.inkSoft }} />
           <YAxis
@@ -1644,6 +1674,18 @@ function PriceHistoryChart({ productId }: { productId: string }) {
             contentStyle={{ borderRadius: 12, border: `1px solid ${T.blueLine}`, fontSize: 12 }}
           />
           <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Area
+            type="monotone"
+            dataKey="__overallMin__"
+            name="ราคาต่ำสุดรวม"
+            stroke={T.pinkHeart}
+            strokeWidth={2}
+            fill={T.pinkHeart}
+            fillOpacity={0.12}
+            dot={false}
+            connectNulls
+            legendType="none"
+          />
           {platforms.map((platform) => (
             <Line
               key={platform}
@@ -1655,13 +1697,107 @@ function PriceHistoryChart({ productId }: { productId: string }) {
               connectNulls
             />
           ))}
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
 // STEP 7: ตารางเปรียบเทียบราคาใต้กราฟ ตามคอลัมน์ที่โจทย์ระบุ
+// ช่องเลือกจังหวัดแบบค้นหาได้ - พิมพ์เพื่อกรองรายชื่อ 77 จังหวัด แล้วคลิกเลือกจากผลลัพธ์ที่ขึ้นมา
+// (เดิมเป็น <select> ธรรมดา ต้องเลื่อนหาเองทั้งลิสต์ - ไม่สะดวกเวลามีตัวเลือกเยอะขนาดนี้)
+function ProvinceSearchSelect({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (province: string | null) => void;
+}) {
+  const [query, setQuery] = useState(value ?? "");
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setQuery(value ?? "");
+  }, [value]);
+
+  // คลิกนอกกล่อง - ปิด dropdown แล้วย้อนข้อความที่พิมพ์ไว้ (ยังไม่กดเลือก) กลับไปเป็นค่าที่เลือกจริงอยู่
+  useEffect(() => {
+    if (!open) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery(value ?? "");
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open, value]);
+
+  const matches = query.trim() ? THAI_PROVINCES.filter((p) => p.includes(query.trim())) : THAI_PROVINCES;
+
+  const handleSelect = (p: string) => {
+    onChange(p);
+    setQuery(p);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder="พิมพ์ชื่อจังหวัด..."
+        className="w-40 rounded-xl px-2.5 py-1.5 text-xs font-semibold outline-none"
+        style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+      />
+      {open && (
+        <div
+          className="absolute left-0 top-full z-10 mt-1 max-h-48 w-48 overflow-y-auto rounded-xl py-1 text-xs shadow-lg"
+          style={{ background: T.paper, border: `1px solid ${T.blueLine}` }}
+        >
+          {value && (
+            <button
+              type="button"
+              onClick={() => {
+                onChange(null);
+                setQuery("");
+                setOpen(false);
+              }}
+              className="block w-full border-b px-3 py-1.5 text-left font-semibold"
+              style={{ borderColor: T.blueLine, color: T.pinkText }}
+            >
+              ล้างการเลือก
+            </button>
+          )}
+          {matches.length === 0 ? (
+            <div className="px-3 py-1.5" style={{ color: T.inkSoft }}>
+              ไม่พบจังหวัดที่ค้นหา
+            </div>
+          ) : (
+            matches.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => handleSelect(p)}
+                className="block w-full px-3 py-1.5 text-left transition-colors duration-100"
+                style={{ background: p === value ? T.pink : "transparent", color: T.inkStrong }}
+              >
+                {p}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CompareState {
   status: "loading" | "success" | "error";
   rows: CompareRow[];
@@ -1700,8 +1836,7 @@ function CompareTable({ productId }: { productId: string }) {
       });
   }, []);
 
-  const handleProvinceChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value || null;
+  const handleProvinceChange = (value: string | null) => {
     setProvince(value);
     if (value) localStorage.setItem(DELIVERY_PROVINCE_STORAGE_KEY, value);
     else localStorage.removeItem(DELIVERY_PROVINCE_STORAGE_KEY);
@@ -1741,19 +1876,7 @@ function CompareTable({ productId }: { productId: string }) {
         <span className="text-xs font-semibold" style={{ color: T.inkSoft }}>
           จัดส่งไปจังหวัด:
         </span>
-        <select
-          value={province ?? ""}
-          onChange={handleProvinceChange}
-          className="rounded-xl px-2.5 py-1.5 text-xs font-semibold outline-none"
-          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
-        >
-          <option value="">เลือกจังหวัด...</option>
-          {THAI_PROVINCES.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
+        <ProvinceSearchSelect value={province} onChange={handleProvinceChange} />
       </div>
 
       <div className="overflow-x-auto rounded-2xl" style={{ border: `1px solid ${T.blueLine}` }}>
@@ -1926,6 +2049,63 @@ function DealCard({
   );
 }
 
+// ============================================================================
+// FEATURE: "📈 เช็กราคาย้อนหลังก่อนซื้อ" - ส่วนโชว์ killer feature บนหน้าหลัก
+// ============================================================================
+// เลือกเฉพาะสินค้าที่มีข้อมูลประวัติราคาจริงอยู่แล้ว (has_price_history จาก GET /api/products - ไม่ต้อง
+// fetch เพิ่ม) ถ้าไม่มีสินค้าไหนมีข้อมูลเลย ไม่แสดง section นี้เลย (ไม่โชว์กล่องเปล่าๆ)
+function PriceHistorySpotlight({ onOpenProduct }: { onOpenProduct: (product: Product) => void }) {
+  const featured = PRODUCTS.filter((p) => p.has_price_history).slice(0, 6);
+  if (featured.length === 0) return null;
+
+  return (
+    <section className="mb-8">
+      <span
+        className="mb-1 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold"
+        style={{ background: T.peach, color: T.peachText }}
+      >
+        💡 KoomSure Price Insight
+      </span>
+      <h2 className="mb-1 mt-2 flex items-center gap-1.5 text-lg font-bold" style={{ color: T.inkStrong }}>
+        📈 เช็กราคาย้อนหลังก่อนซื้อ
+      </h2>
+      <p className="mb-4 text-xs font-medium" style={{ color: T.inkSoft }}>
+        ดูว่าราคาสินค้าเคยขึ้นหรือลงแค่ไหน ก่อนตัดสินใจซื้อ
+      </p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {featured.map((product) => {
+          const price = minPrice(product.listings);
+          return (
+            <button
+              key={product.product_id}
+              onClick={() => onOpenProduct(product)}
+              className="flex items-center gap-3 rounded-3xl p-4 text-left transition-all duration-300 ease-out hover:-translate-y-1"
+              style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 10px 28px -14px rgba(148,116,196,0.28)" }}
+            >
+              <img
+                src={resolveImageUrl(product.image)}
+                alt={product.product_name}
+                className="h-16 w-16 flex-shrink-0 object-contain"
+              />
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="truncate text-sm font-semibold" style={{ color: T.inkStrong }}>
+                  {product.product_name}
+                </span>
+                {price !== null && (
+                  <span style={{ fontFamily: "'Fraunces', serif", color: T.pinkText }} className="text-base font-bold">
+                    ฿{fmtBaht(price)}
+                  </span>
+                )}
+                <MiniPriceSparkline productId={product.product_id} currentPrice={price} />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 interface DealsState {
   status: "loading" | "success" | "error";
   deals: Deal[];
@@ -2078,11 +2258,6 @@ interface MiniSparklinePoint {
   price: number;
 }
 
-interface MiniSparklineState {
-  status: "loading" | "success" | "error" | "none";
-  data: MiniSparklinePoint[];
-}
-
 // ราคาต่ำสุดในวันนั้น (ข้ามทุกแพลตฟอร์ม) - เพียงพอสำหรับกราฟจิ๋วบนการ์ดที่ไม่มีที่ว่างให้แยกสีต่อร้าน
 function buildMinPriceSeries(entries: PriceHistoryEntry[]): MiniSparklinePoint[] {
   const dates = [...new Set(entries.map((e) => e.date))].sort();
@@ -2092,10 +2267,157 @@ function buildMinPriceSeries(entries: PriceHistoryEntry[]): MiniSparklinePoint[]
   }));
 }
 
+// ============================================================================
+// FEATURE: Price Insight / "ควรซื้อตอนนี้ไหม" - killer feature หลักของแอป
+// ============================================================================
+
+interface PriceInsight {
+  pctVsAverage: number; // ราคาปัจจุบันเทียบกับค่าเฉลี่ย (ลบ = ถูกกว่าเฉลี่ย)
+  nearMin: boolean; // ราคาปัจจุบันใกล้ราคาต่ำสุดในช่วงที่พิจารณา (ภายใน 3%)
+  verdict: "good" | "neutral" | "bad";
+}
+
+const _MIN_REAL_DATES_FOR_VERDICT = 3;
+
+// คำนวณจาก "ข้อมูลจริงจากการสแกนเท่านั้น" (source === "scraper") ไม่เอาข้อมูล seed มาปนเด็ดขาด เพราะ
+// ข้อมูล seed เป็นข้อมูลตัวอย่างที่ไม่รู้ที่มาแน่ชัด การแนะนำให้ "ซื้อตอนนี้/รอก่อน" ต้องอิงข้อมูลที่ยืนยันได้จริง
+// เท่านั้น - ถ้ามีข้อมูลจริงน้อยกว่า 3 วันที่ต่างกัน คืนค่า null (ไม่เดา ไม่มี verdict ให้แสดง)
+function computePriceInsight(entries: PriceHistoryEntry[], currentPrice: number | null): PriceInsight | null {
+  if (currentPrice === null) return null;
+  const realEntries = entries.filter((e) => e.source === "scraper");
+  const distinctRealDates = new Set(realEntries.map((e) => e.date));
+  if (distinctRealDates.size < _MIN_REAL_DATES_FOR_VERDICT) return null;
+
+  const dailyMins = buildMinPriceSeries(realEntries);
+  const prices = dailyMins.map((d) => d.price);
+  const average = prices.reduce((a, b) => a + b, 0) / prices.length;
+  const min = Math.min(...prices);
+  if (average <= 0) return null;
+
+  const pctVsAverage = ((currentPrice - average) / average) * 100;
+  const nearMin = min > 0 && (currentPrice - min) / min <= 0.03;
+  const verdict: PriceInsight["verdict"] = pctVsAverage <= -2 ? "good" : pctVsAverage >= 2 ? "bad" : "neutral";
+
+  return { pctVsAverage, nearMin, verdict };
+}
+
+// ป้ายสรุป insight สั้นๆ บรรทัดเดียว ใช้ได้ทั้งบนการ์ด/โฮมเพจ/หน้ารายละเอียด - เงียบๆ (ไม่เรนเดอร์อะไรเลย) ถ้า
+// ข้อมูลยังไม่พอ ไม่ใช้ placeholder หลอกๆ (ดู BuyNowInsight ด้านล่างสำหรับที่เดียวที่โชว์ข้อความ "ยังไม่พอ" ตรงๆ)
+function PriceInsightBadge({
+  entries,
+  currentPrice,
+  rangeLabel,
+}: {
+  entries: PriceHistoryEntry[];
+  currentPrice: number | null;
+  rangeLabel: string;
+}) {
+  const insight = computePriceInsight(entries, currentPrice);
+  if (!insight) return null;
+
+  const pctText = Math.abs(insight.pctVsAverage).toFixed(1);
+
+  if (insight.nearMin) {
+    return (
+      <span className="flex items-center gap-1 text-xs font-bold" style={{ color: T.red }}>
+        🔥 ราคาปัจจุบันใกล้ราคาต่ำสุดในรอบ {rangeLabel}
+      </span>
+    );
+  }
+  if (insight.verdict === "good") {
+    return (
+      <span className="flex items-center gap-1 text-xs font-bold" style={{ color: T.green }}>
+        📉 ราคาต่ำกว่าค่าเฉลี่ย {rangeLabel} {pctText}%
+      </span>
+    );
+  }
+  if (insight.verdict === "bad") {
+    return (
+      <span className="flex items-center gap-1 text-xs font-bold" style={{ color: T.red }}>
+        ⏳ ราคาสูงกว่าค่าเฉลี่ย {rangeLabel} {pctText}% ควรรอดูราคา
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: T.inkSoft }}>
+      ใกล้เคียงค่าเฉลี่ย {rangeLabel}
+    </span>
+  );
+}
+
+// กล่องคำแนะนำ "ควรซื้อตอนนี้ไหม" - อยู่ในหน้ารายละเอียดสินค้าเท่านั้น (ไม่ใส่ในการ์ด กันรก) ต้องมีข้อมูลจริง
+// จากการสแกนอย่างน้อย 3 วันก่อนจะกล้าฟันธง ถ้ายังไม่พอ "ยังคงแสดงกล่องนี้" แต่บอกตรงๆ ว่าข้อมูลยังไม่พอ ไม่ใช่
+// เงียบไปเลย (ต่างจาก PriceInsightBadge ด้านบนซึ่งไม่แสดงอะไรตอนข้อมูลไม่พอ)
+function BuyNowInsight({
+  entries,
+  currentPrice,
+}: {
+  entries: PriceHistoryEntry[];
+  currentPrice: number | null;
+}) {
+  const insight = computePriceInsight(entries, currentPrice);
+
+  if (!insight) {
+    return (
+      <div className="flex items-center gap-2.5 rounded-2xl p-3.5" style={{ background: T.bgVia }}>
+        <span className="text-xl">📊</span>
+        <span className="text-xs font-medium" style={{ color: T.inkSoft }}>
+          ยังไม่มีข้อมูลเพียงพอสำหรับคำแนะนำ (ต้องมีข้อมูลราคาจริงจากการสแกนอย่างน้อย 3 วัน)
+        </span>
+      </div>
+    );
+  }
+
+  const pctText = Math.abs(insight.pctVsAverage).toFixed(1);
+  const presets = {
+    good: {
+      emoji: "🟢",
+      label: "น่าซื้อ",
+      reason: `ราคาปัจจุบันต่ำกว่าค่าเฉลี่ย ${pctText}%`,
+      bg: `${T.green}1A`,
+      color: T.green,
+    },
+    neutral: {
+      emoji: "🟡",
+      label: "รอดูราคา",
+      reason: "ราคาปัจจุบันใกล้เคียงค่าเฉลี่ย",
+      bg: T.peach,
+      color: T.peachText,
+    },
+    bad: {
+      emoji: "🔴",
+      label: "อาจรอก่อน",
+      reason: `ราคาปัจจุบันสูงกว่าค่าเฉลี่ย ${pctText}%`,
+      bg: "#FBDADA",
+      color: "#B4453B",
+    },
+  } as const;
+  const preset = presets[insight.verdict];
+
+  return (
+    <div className="flex items-center gap-2.5 rounded-2xl p-3.5" style={{ background: preset.bg }}>
+      <span className="text-xl">{preset.emoji}</span>
+      <div className="flex flex-col">
+        <span className="text-sm font-bold" style={{ color: preset.color }}>
+          {preset.label}
+        </span>
+        <span className="text-xs font-medium" style={{ color: preset.color }}>
+          {preset.reason}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // กราฟราคาย้อนหลังจิ๋วบนการ์ดสินค้า - Killer feature: แสดงเฉพาะตอนมีข้อมูลย้อนหลังพอ (>=2 วันต่างกัน)
 // เงียบๆ ไม่แสดงอะไรเลยถ้าไม่มีข้อมูล ไม่เปลืองพื้นที่การ์ดด้วย placeholder ที่ไม่มีประโยชน์
-function MiniPriceSparkline({ productId }: { productId: string }) {
-  const [state, setState] = useState<MiniSparklineState>({ status: "loading", data: [] });
+// ดึงประวัติราคาครั้งเดียว ใช้ทั้งพล็อตกราฟจิ๋วและคำนวณ PriceInsightBadge ด้วย - ไม่ยิง request ซ้ำ
+// สองครั้งสำหรับการ์ดเดียวกัน (ก่อนหน้านี้มีแต่กราฟจิ๋ว ไม่มีข้อความ insight)
+function MiniPriceSparkline({ productId, currentPrice }: { productId: string; currentPrice: number | null }) {
+  const [state, setState] = useState<{ status: "loading" | "success" | "none" | "error"; entries: PriceHistoryEntry[] }>({
+    status: "loading",
+    entries: [],
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -2103,13 +2425,13 @@ function MiniPriceSparkline({ productId }: { productId: string }) {
       .then((entries) => {
         if (cancelled) return;
         if (!hasEnoughHistory(entries)) {
-          setState({ status: "none", data: [] });
+          setState({ status: "none", entries: [] });
           return;
         }
-        setState({ status: "success", data: buildMinPriceSeries(entries) });
+        setState({ status: "success", entries });
       })
       .catch(() => {
-        if (!cancelled) setState({ status: "error", data: [] });
+        if (!cancelled) setState({ status: "error", entries: [] });
       });
     return () => {
       cancelled = true;
@@ -2118,31 +2440,35 @@ function MiniPriceSparkline({ productId }: { productId: string }) {
 
   if (state.status !== "success") return null;
 
-  const first = state.data[0].price;
-  const last = state.data[state.data.length - 1].price;
+  const sparklineData = buildMinPriceSeries(state.entries);
+  const first = sparklineData[0].price;
+  const last = sparklineData[sparklineData.length - 1].price;
   const trendColor = last < first ? T.green : last > first ? T.red : T.inkSoft;
   const TrendIcon = last < first ? ArrowDown : last > first ? ArrowUp : Minus;
 
   return (
-    <div className="mt-1 flex items-center gap-1.5">
-      <div style={{ width: 52, height: 22 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={state.data} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
-            <Line
-              type="monotone"
-              dataKey="price"
-              stroke={trendColor}
-              strokeWidth={1.75}
-              dot={false}
-              isAnimationActive={false}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+    <div className="mt-1 flex flex-col gap-1">
+      <PriceInsightBadge entries={state.entries} currentPrice={currentPrice} rangeLabel="ที่มีข้อมูล" />
+      <div className="flex items-center gap-1.5">
+        <div style={{ width: 52, height: 22 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={sparklineData} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+              <Line
+                type="monotone"
+                dataKey="price"
+                stroke={trendColor}
+                strokeWidth={1.75}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: trendColor }}>
+          <TrendIcon size={10} />
+          ราคาย้อนหลัง
+        </span>
       </div>
-      <span className="flex items-center gap-0.5 text-[10px] font-semibold" style={{ color: trendColor }}>
-        <TrendIcon size={10} />
-        ราคาย้อนหลัง
-      </span>
     </div>
   );
 }
@@ -2212,7 +2538,7 @@ function ProductCard({
             </span>
           )}
         </div>
-        <MiniPriceSparkline productId={product.product_id} />
+        <MiniPriceSparkline productId={product.product_id} currentPrice={minPrice(product.listings)} />
       </div>
     </div>
   );
@@ -2336,6 +2662,62 @@ function ListingRow({ listing, isBest }: { listing: Listing; isBest: boolean }) 
   );
 }
 
+// ปุ่ม "วิเคราะห์สินค้านี้ด้วย AI" ในหน้ารายละเอียดสินค้า - รู้ product_id อยู่แล้วจึงส่งตรงไปที่ backend
+// โดยไม่ต้องผ่านขั้นตอนจับคู่ข้อความแบบ AiAssistantCard บนหน้าหลัก ผลลัพธ์แม่นยำกว่าเสมอ
+function AiAnalyzeProductButton({ productId }: { productId: string }) {
+  const [status, setStatus] = useState<AiAssistantStatus>("idle");
+  const [analysis, setAnalysis] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+
+  const handleClick = async () => {
+    setStatus("loading");
+    setErrorMessage("");
+    try {
+      const data = await fetchAiAnalysis({ product_id: productId });
+      setAnalysis(data.analysis || "");
+      setStatus("success");
+    } catch (err) {
+      setErrorMessage((err as Error).message || "เกิดข้อผิดพลาด");
+      setStatus("error");
+    }
+  };
+
+  if (status === "idle") {
+    return (
+      <button
+        onClick={handleClick}
+        className="mb-4 flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold text-white"
+        style={{ background: T.pinkHeart }}
+      >
+        <Sparkles size={13} />
+        วิเคราะห์สินค้านี้ด้วย AI
+      </button>
+    );
+  }
+
+  return (
+    <div className="mb-4 rounded-2xl p-3.5 text-sm" style={{ background: T.bgVia, color: T.inkStrong }}>
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-bold" style={{ color: T.pinkText }}>
+        <Sparkles size={13} />
+        KoomSure AI
+      </div>
+      {status === "loading" && (
+        <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: T.inkSoft }}>
+          <Loader2 size={13} className="animate-spin" />
+          กำลังวิเคราะห์...
+        </span>
+      )}
+      {status === "success" && <p className="whitespace-pre-wrap text-xs leading-relaxed">{analysis}</p>}
+      {status === "error" && (
+        <p className="flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
+          <AlertCircle size={12} />
+          {errorMessage}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ProductModal({
   product,
   visible,
@@ -2393,6 +2775,27 @@ function ProductModal({
     return getRelatedProducts(product.product_id);
   }, [product]);
 
+  const currentPrice = product ? bestValuePrice(product.listings) : null;
+
+  // ดึงประวัติราคาทีเดียวที่นี่ ใช้ร่วมกันทั้ง PriceHistoryChart และ BuyNowInsight ด้านล่าง - กันยิง
+  // request ซ้ำสองครั้งสำหรับสินค้าเดียวกัน (ทั้งสองส่วนต้องใช้ entries ชุดเดียวกันอยู่แล้ว)
+  const [historyState, setHistoryState] = useState<PriceHistoryState>({ status: "loading", data: [] });
+  useEffect(() => {
+    if (!product) return;
+    let cancelled = false;
+    setHistoryState({ status: "loading", data: [] });
+    fetchPriceHistory(product.product_id)
+      .then((entries) => {
+        if (!cancelled) setHistoryState({ status: "success", data: entries });
+      })
+      .catch(() => {
+        if (!cancelled) setHistoryState({ status: "error", data: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [product?.product_id]);
+
   if (!product) return null;
 
   return (
@@ -2445,25 +2848,28 @@ function ProductModal({
           </button>
         </div>
 
-        <div className="relative flex-shrink-0" style={{ background: T.bgTo }}>
-          <img
-            src={resolveImageUrl(product.image)}
-            alt={product.product_name}
-            className="h-56 w-full object-contain p-6 sm:h-64"
-          />
-          <span
-            className="absolute left-4 top-4 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider"
-            style={{ background: "rgba(255,255,255,0.9)", color: T.inkStrong }}
-          >
-            {product.brand}
-          </span>
-          <div className="absolute bottom-3 right-3">
-            <FavoriteHeart active={isFavorite} onToggle={() => onToggleFavorite(product.product_id)} floating={false} />
-          </div>
-        </div>
-
+        {/* รูปสินค้าอยู่ "ใน" กล่องที่ scroll ได้ (ไม่ใช่ flex-shrink-0 แยกไว้ด้านบนเหมือนเดิม) จะได้เลื่อนหายไป
+            พร้อมเนื้อหาตามปกติเวลาสกรอลล์ลง ไม่ตรึงอยู่ด้านบนบังพื้นที่แสดงข้อมูลสินค้า - ใช้ margin ลบชดเชย
+            padding ของกล่อง scroll เพื่อให้รูปยังดูเต็มขอบเหมือนก่อนหน้า */}
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7" style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
-          <span className="font-mono text-xs tracking-widest" style={{ color: T.inkSoft }}>
+          <div className="relative -mx-5 -mt-5 sm:-mx-7" style={{ background: T.bgTo }}>
+            <img
+              src={resolveImageUrl(product.image)}
+              alt={product.product_name}
+              className="h-56 w-full object-contain p-6 sm:h-64"
+            />
+            <span
+              className="absolute left-4 top-4 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider"
+              style={{ background: "rgba(255,255,255,0.9)", color: T.inkStrong }}
+            >
+              {product.brand}
+            </span>
+            <div className="absolute bottom-3 right-3">
+              <FavoriteHeart active={isFavorite} onToggle={() => onToggleFavorite(product.product_id)} floating={false} />
+            </div>
+          </div>
+
+          <span className="mt-4 block font-mono text-xs tracking-widest" style={{ color: T.inkSoft }}>
             {product.model_number}
           </span>
           <h2 style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="mt-1 text-2xl font-bold leading-tight">
@@ -2472,6 +2878,40 @@ function ProductModal({
           <p className="mt-2 text-sm leading-relaxed" style={{ color: T.inkSoft }}>
             {product.specs}
           </p>
+
+          {/* ราคาปัจจุบัน + ประวัติราคา ตั้งใจให้อยู่สูงสุดเท่าที่จะทำได้ - เป็น "killer feature" หลักของแอป
+              ไม่ใช่แค่ฟีเจอร์เสริม จึงต้องอยู่ก่อนตารางเปรียบเทียบร้านค้าแบบละเอียด ไม่ใช่หลัง */}
+          <div className="mt-4 flex items-baseline gap-2">
+            <span className="text-xs font-semibold" style={{ color: T.inkSoft }}>
+              ราคาปัจจุบันต่ำสุด
+            </span>
+            {currentPrice !== null ? (
+              <span style={{ fontFamily: "'Fraunces', serif", color: T.pinkText }} className="text-3xl font-bold">
+                ฿{fmtBaht(currentPrice)}
+              </span>
+            ) : (
+              <span style={{ fontFamily: "'Fraunces', serif", color: T.inkSoft }} className="text-3xl font-bold">
+                หมดสต๊อก
+              </span>
+            )}
+          </div>
+
+          <div className="mb-2 mt-4 flex items-center gap-1.5">
+            <span
+              className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold"
+              style={{ background: T.peach, color: T.peachText }}
+            >
+              💡 KoomSure Price Insight
+            </span>
+          </div>
+          <PriceHistoryChart state={historyState} currentPrice={currentPrice} />
+          <div className="mt-3">
+            <BuyNowInsight entries={historyState.data} currentPrice={currentPrice} />
+          </div>
+
+          <div className="mt-4">
+            <AiAnalyzeProductButton key={product.product_id} productId={product.product_id} />
+          </div>
 
           <div className="my-5 border-t-2 border-dashed" style={{ borderColor: T.blueLine }} />
 
@@ -2490,13 +2930,7 @@ function ProductModal({
 
           <div className="my-5 border-t-2 border-dashed" style={{ borderColor: T.blueLine }} />
 
-          <h3 className="mb-3 flex items-center gap-1.5 text-sm font-bold" style={{ color: T.inkStrong }}>
-            <TrendingUp size={15} />
-            กราฟราคาย้อนหลัง
-          </h3>
-          <PriceHistoryChart productId={product.product_id} />
-
-          <h3 className="mb-3 mt-5 text-sm font-bold" style={{ color: T.inkStrong }}>
+          <h3 className="mb-3 text-sm font-bold" style={{ color: T.inkStrong }}>
             ตารางเปรียบเทียบราคาละเอียด (รวมคูปอง/ค่าส่ง)
           </h3>
           <CompareTable productId={product.product_id} />
@@ -2795,6 +3229,22 @@ interface BulkRefreshState {
   failTotal: number;
 }
 
+// สินค้าที่ "ไม่ใช่ทุกร้านสำเร็จ" ระหว่างสแกนทั้งหมด - เก็บไว้โชว์เป็นรายงานสรุปหลังสแกนเสร็จ (ไม่ใช่แค่ตัวเลขรวม)
+interface BulkRefreshFailure {
+  productId: string;
+  productLabel: string;
+  failedPlatforms: { platform: string; error: string }[];
+}
+
+interface BulkRefreshSummary {
+  totalProducts: number;
+  fullySucceededProducts: number; // ทุก listing ของสินค้านั้นสแกนสำเร็จหมด
+  totalListingsOk: number;
+  totalListingsFailed: number;
+  failures: BulkRefreshFailure[]; // สินค้าที่มี listing ล้มเหลวอย่างน้อย 1 รายการ (รวมถึงล้มเหลวทั้งหมด)
+  cancelled: boolean;
+}
+
 // STEP 5: ตาราง list + ปุ่ม เพิ่ม/แก้ไข/ลบ ของ 1 entity - ใช้ config เดียวกับฟอร์มด้านบน
 interface AdminTableState {
   status: "loading" | "success" | "error";
@@ -2809,6 +3259,8 @@ function AdminEntityTable({
   setRefreshSummary,
   bulkRefresh,
   setBulkRefresh,
+  bulkRefreshSummary,
+  setBulkRefreshSummary,
   bulkCancelRef,
 }: {
   entityKey: string;
@@ -2818,6 +3270,8 @@ function AdminEntityTable({
   setRefreshSummary: (s: { id: string; text: string } | null) => void;
   bulkRefresh: BulkRefreshState | null;
   setBulkRefresh: (s: BulkRefreshState | null) => void;
+  bulkRefreshSummary: BulkRefreshSummary | null;
+  setBulkRefreshSummary: (s: BulkRefreshSummary | null) => void;
   bulkCancelRef: { current: boolean };
 }) {
   const config = ADMIN_ENTITIES[entityKey];
@@ -2870,30 +3324,63 @@ function AdminEntityTable({
 
   // สแกนราคาใหม่ทีละสินค้า "ต่อเนื่องกัน" ไม่ยิงพร้อมกันหลายตัว (เจตนา - ลดความเสี่ยงโดนเว็บร้านค้าบล็อกหนักขึ้น
   // เหมือนตรรกะเดิมของ scraper ที่ทำทีละ URL อยู่แล้ว) สินค้าทั้งแคตตาล็อกอาจใช้เวลารวมเป็นสิบๆ นาที จึงมีปุ่มหยุดให้
+  // วนลูปทุกแถวใน state.rows แบบไม่มีเงื่อนไขข้าม (ไม่เช็คว่ามีประวัติราคาอยู่แล้วหรือยัง) - ตั้งใจให้ครอบคลุม
+  // สินค้าทุกชิ้นในแคตตาล็อกทุกครั้งที่กด ไม่ว่าจะเคยสแกนมาก่อนหรือไม่ก็ตาม
   const handleRefreshAll = async () => {
+    const rows = state.rows; // snapshot ไว้ตอนเริ่ม กันปัญหาถ้า state เปลี่ยนระหว่างลูป (async)
     if (
       !window.confirm(
-        `สแกนราคาใหม่ทั้งหมด ${state.rows.length} รายการ ต่อเนื่องกันทีละรายการ อาจใช้เวลารวมหลายสิบนาที ต้องการดำเนินการต่อหรือไม่?`
+        `สแกนราคาใหม่ทั้งหมด ${rows.length} รายการ ต่อเนื่องกันทีละรายการ อาจใช้เวลารวมหลายสิบนาที ต้องการดำเนินการต่อหรือไม่?`
       )
     ) {
       return;
     }
     bulkCancelRef.current = false;
+    setBulkRefreshSummary(null); // ล้างสรุปผลรอบก่อนหน้าทิ้ง ไม่ให้ค้างปนกับรอบใหม่ที่กำลังจะเริ่ม
     let okTotal = 0;
     let failTotal = 0;
-    for (let i = 0; i < state.rows.length; i++) {
+    let fullySucceededProducts = 0;
+    const failures: BulkRefreshFailure[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
       if (bulkCancelRef.current) break;
-      const row = state.rows[i];
+      const row = rows[i];
       const id = String(row[config.idField]);
-      setBulkRefresh({ index: i + 1, total: state.rows.length, label: id, okTotal, failTotal });
+      const label = row.product_name ? String(row.product_name) : id;
+      setBulkRefresh({ index: i + 1, total: rows.length, label: id, okTotal, failTotal });
       try {
         const results = await refreshProductPrices(id);
-        okTotal += results.filter((r) => r.status === "ok").length;
-        failTotal += results.filter((r) => r.status === "failed").length;
-      } catch {
+        const okCount = results.filter((r) => r.status === "ok").length;
+        const failed = results.filter((r) => r.status === "failed");
+        okTotal += okCount;
+        failTotal += failed.length;
+        if (failed.length === 0) {
+          fullySucceededProducts += 1;
+        } else {
+          failures.push({
+            productId: id,
+            productLabel: label,
+            failedPlatforms: failed.map((f) => ({ platform: f.platform, error: f.error || "ไม่ทราบสาเหตุ" })),
+          });
+        }
+      } catch (err) {
         failTotal += 1;
+        failures.push({
+          productId: id,
+          productLabel: label,
+          failedPlatforms: [{ platform: "-", error: (err as Error).message || "สแกนไม่สำเร็จ" }],
+        });
       }
     }
+
+    setBulkRefreshSummary({
+      totalProducts: rows.length,
+      fullySucceededProducts,
+      totalListingsOk: okTotal,
+      totalListingsFailed: failTotal,
+      failures,
+      cancelled: bulkCancelRef.current,
+    });
     setBulkRefresh(null);
     loadRows();
   };
@@ -2950,6 +3437,49 @@ function AdminEntityTable({
         >
           กำลังสแกน {bulkRefresh.index}/{bulkRefresh.total} — {bulkRefresh.label} (สำเร็จ {bulkRefresh.okTotal}{" "}
           / ล้มเหลว {bulkRefresh.failTotal} รายการร้านค้า จนถึงตอนนี้)
+        </div>
+      )}
+
+      {/* สรุปผลหลังสแกนทั้งหมดเสร็จ (หรือถูกกดหยุดกลางคัน) - ค้างอยู่จนกว่าจะกดปิดหรือเริ่มสแกนรอบใหม่ ไม่ได้
+          หายไปพร้อมกับ progress bar เหมือนเดิม เพื่อให้เห็นว่าสินค้า/ร้านไหนล้มเหลวบ้างหลังสแกนจบแล้ว */}
+      {bulkRefreshSummary && (
+        <div className="mb-3 rounded-2xl p-4" style={{ background: T.bgVia, border: `1px solid ${T.blueLine}` }}>
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-sm font-bold" style={{ color: T.inkStrong }}>
+              {bulkRefreshSummary.cancelled ? "หยุดสแกนกลางคัน — " : "สแกนครบทุกสินค้าแล้ว — "}
+              สำเร็จทั้งหมด {bulkRefreshSummary.fullySucceededProducts}/{bulkRefreshSummary.totalProducts} สินค้า
+              {" "}(รวม {bulkRefreshSummary.totalListingsOk} ร้านค้าสำเร็จ / {bulkRefreshSummary.totalListingsFailed}{" "}
+              ร้านค้าล้มเหลว)
+            </p>
+            <button
+              onClick={() => setBulkRefreshSummary(null)}
+              aria-label="ปิดสรุปผล"
+              className="flex-shrink-0 text-xs font-bold"
+              style={{ color: T.inkSoft }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          {bulkRefreshSummary.failures.length > 0 && (
+            <div className="mt-2.5 flex flex-col gap-1.5">
+              <p className="text-xs font-semibold" style={{ color: T.inkSoft }}>
+                สินค้าที่มีร้านค้าล้มเหลวบางส่วนหรือทั้งหมด ({bulkRefreshSummary.failures.length} รายการ):
+              </p>
+              <ul className="flex flex-col gap-1">
+                {bulkRefreshSummary.failures.map((f) => (
+                  <li key={f.productId} className="text-xs" style={{ color: T.inkStrong }}>
+                    <span className="font-semibold">
+                      {f.productId} — {f.productLabel}:
+                    </span>{" "}
+                    <span style={{ color: T.red }}>
+                      {f.failedPlatforms.map((fp) => `${fp.platform} (${fp.error})`).join(", ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
@@ -3106,6 +3636,7 @@ function AdminDashboard({ onLogout }: { onLogout: () => void }) {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [refreshSummary, setRefreshSummary] = useState<{ id: string; text: string } | null>(null);
   const [bulkRefresh, setBulkRefresh] = useState<BulkRefreshState | null>(null);
+  const [bulkRefreshSummary, setBulkRefreshSummary] = useState<BulkRefreshSummary | null>(null);
   const bulkCancelRef = useRef(false);
 
   // เตือนก่อนออกจากหน้า/reload ถ้ายังสแกนราคาไม่เสร็จ - ป้องกันสแกนถูกตัดกลางคันโดยไม่ตั้งใจ
@@ -3198,6 +3729,8 @@ function AdminDashboard({ onLogout }: { onLogout: () => void }) {
           setRefreshSummary={setRefreshSummary}
           bulkRefresh={bulkRefresh}
           setBulkRefresh={setBulkRefresh}
+          bulkRefreshSummary={bulkRefreshSummary}
+          setBulkRefreshSummary={setBulkRefreshSummary}
           bulkCancelRef={bulkCancelRef}
         />
       </main>
@@ -3236,6 +3769,219 @@ async function extractErrorMessage(res: Response, fallback: string): Promise<str
     /* response ไม่ใช่ JSON ก็ใช้ข้อความ default ไป */
   }
   return fallback;
+}
+
+// ============================================================================
+// FEATURE: KoomSure AI - วิเคราะห์สินค้าด้วย Gemini โดยอิงข้อมูลจริงของแอป (ราคา/ค่าส่ง/ราคาย้อนหลัง)
+// Backend เป็นคนคำนวณตัวเลขทั้งหมดเอง (ดู services/ai_assistant/analysis_facts.py) - Gemini มีหน้าที่
+// แค่เรียบเรียงเป็นภาษาที่เข้าใจง่าย ไม่ได้สร้างตัวเลขขึ้นมาเอง
+// ============================================================================
+interface AiAnalysisResult {
+  matched: boolean;
+  product_id: string | null;
+  product_name: string | null;
+  analysis: string | null;
+  message: string | null;
+}
+
+type AiAnalyzeRequestBody =
+  | { query: string }
+  | { product_id: string }
+  | { category: string; intent: string };
+
+async function fetchAiAnalysis(body: AiAnalyzeRequestBody): Promise<AiAnalysisResult> {
+  const res = await fetch(`${API_BASE}/api/ai-assistant/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "วิเคราะห์ไม่สำเร็จ ลองใหม่อีกครั้ง"));
+  return res.json() as Promise<AiAnalysisResult>;
+}
+
+type AiAssistantStatus = "idle" | "loading" | "success" | "not_found" | "error";
+
+// หมวดหมู่สำหรับค้นหาแบบ "กรอง" ใน KoomSure AI - ใช้ id เดียวกับ CATEGORIES ของช่องค้นหาหลัก (คนละ state กัน)
+const AI_CATEGORIES = [
+  { id: "phone", label: "สมาร์ทโฟน" },
+  { id: "tablet", label: "แท็บเล็ต & โน้ตบุ๊ค" },
+  { id: "watch", label: "สมาร์ทวอทช์" },
+  { id: "accessory", label: "อุปกรณ์เสริม & หูฟัง" },
+];
+
+// ปุ่มลัดต้องเลือกหมวดหมู่ก่อนเสมอ แล้วกดปุ่มนี้เพื่อให้ Gemini วิเคราะห์ "สินค้าที่ตรงเงื่อนไขนี้ที่สุด" ในหมวดนั้น
+// ทันที (ไม่ต้องพิมพ์อะไรเพิ่ม) - ทั้ง 3 ตัวเลือกนี้คำนวณได้จริงจากข้อมูลที่มีอยู่แล้ว (ราคา/สต๊อก/ส่วนลด/ประวัติราคา)
+// ไม่มีปุ่มไหนที่ต้องเดาหรือสร้างข้อมูลที่ไม่มีอยู่จริง (ตัดปุ่ม "ราคาดีที่สุด" ออกแล้ว เพราะความหมายซ้ำกับ
+// "ราคาถูกที่สุด" มากเกินไปในมุมมองผู้ใช้ - รวมตรรกะ "มีของพร้อมส่งด้วย" เข้าไปในปุ่ม "ราคาถูกที่สุด" ปุ่มเดียวแทน)
+const AI_QUICK_INTENTS: { id: string; label: string }[] = [
+  { id: "cheapest", label: "ราคาถูกที่สุด" },
+  { id: "biggest_discount", label: "ลดราคามากที่สุด" },
+  { id: "price_history", label: "ดูประวัติราคา" },
+];
+
+function AiAssistantCard({ onOpenProduct }: { onOpenProduct: (product: Product) => void }) {
+  const [query, setQuery] = useState("");
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [status, setStatus] = useState<AiAssistantStatus>("idle");
+  const [result, setResult] = useState<AiAnalysisResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  const runAnalysis = async (body: AiAnalyzeRequestBody) => {
+    setStatus("loading");
+    setErrorMessage("");
+    try {
+      const data = await fetchAiAnalysis(body);
+      setResult(data);
+      setStatus(data.matched ? "success" : "not_found");
+    } catch (err) {
+      setErrorMessage((err as Error).message || "เกิดข้อผิดพลาด");
+      setStatus("error");
+    }
+  };
+
+  const handleAnalyze = (e: FormEvent) => {
+    e.preventDefault();
+    if (!query.trim() || status === "loading") return;
+    runAnalysis({ query: query.trim() });
+  };
+
+  const handleQuickIntent = (intent: string) => {
+    if (!activeCategory || status === "loading") return;
+    runAnalysis({ category: activeCategory, intent });
+  };
+
+  const hasAnythingToClear = query.trim() !== "" || activeCategory !== null || status !== "idle";
+
+  const handleClear = () => {
+    setQuery("");
+    setActiveCategory(null);
+    setStatus("idle");
+    setResult(null);
+    setErrorMessage("");
+  };
+
+  const matchedProduct = result?.product_id ? PRODUCTS.find((p) => p.product_id === result.product_id) : undefined;
+
+  return (
+    <div
+      className="mb-6 rounded-3xl p-5 sm:p-6"
+      style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 10px 28px -14px rgba(148,116,196,0.28)" }}
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Sparkles size={18} style={{ color: T.pinkText }} />
+          <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-lg font-bold">
+            KoomSure AI
+          </span>
+        </div>
+        {hasAnythingToClear && (
+          <button
+            type="button"
+            onClick={handleClear}
+            className="flex flex-shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold transition-colors duration-150"
+            style={{ background: "transparent", color: T.pinkText, border: `1.5px dashed ${T.pinkHeart}` }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = T.pink)}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+          >
+            <RotateCcw size={12} strokeWidth={2.5} />
+            ล้างข้อมูล
+          </button>
+        )}
+      </div>
+      <p className="mb-3 text-sm font-medium" style={{ color: T.inkSoft }}>
+        ไม่รู้จะซื้ออะไรดี? ลองให้ AI ช่วยวิเคราะห์จากข้อมูลจริงในระบบ
+      </p>
+
+      <form onSubmit={handleAnalyze} className="flex flex-col gap-2 sm:flex-row">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="พิมพ์สิ่งที่อยากค้นหา เช่น iPhone 16, โน้ตบุ๊ก, หูฟัง"
+          className="flex-1 rounded-xl px-3.5 py-2.5 text-sm outline-none"
+          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+        />
+        <button
+          type="submit"
+          disabled={!query.trim() || status === "loading"}
+          className="flex items-center justify-center gap-1.5 rounded-full px-5 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+          style={{ background: T.pinkHeart }}
+        >
+          {status === "loading" ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+          {status === "loading" ? "กำลังวิเคราะห์..." : "วิเคราะห์"}
+        </button>
+      </form>
+
+      {/* หรือเลือกหมวดหมู่ แล้วกดปุ่มลัดด้านล่างได้เลยโดยไม่ต้องพิมพ์ - คลิกหมวดเดิมซ้ำเพื่อยกเลิกการเลือก */}
+      <p className="mb-1.5 mt-3 text-xs font-semibold" style={{ color: T.inkSoft }}>
+        หรือเลือกหมวดหมู่สินค้า แล้วกดปุ่มลัดด้านล่าง:
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {AI_CATEGORIES.map((cat) => {
+          const active = activeCategory === cat.id;
+          return (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => setActiveCategory(active ? null : cat.id)}
+              className="rounded-full px-3 py-1.5 text-xs font-bold transition-colors duration-150"
+              style={{
+                background: active ? T.pinkHeart : T.bgVia,
+                color: active ? "#FFFFFF" : T.inkStrong,
+                border: `1px solid ${active ? T.pinkHeart : T.blueLine}`,
+              }}
+            >
+              {cat.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {AI_QUICK_INTENTS.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            disabled={!activeCategory || status === "loading"}
+            onClick={() => handleQuickIntent(opt.id)}
+            title={activeCategory ? undefined : "เลือกหมวดหมู่สินค้าก่อน"}
+            className="rounded-full px-3 py-1.5 text-xs font-semibold transition-colors duration-150 disabled:opacity-40"
+            style={{ background: T.pink, color: T.pinkText, border: `1px solid ${T.pink}` }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {status === "success" && result?.analysis && (
+        <div className="mt-4 rounded-2xl p-4 text-sm leading-relaxed" style={{ background: T.bgVia, color: T.inkStrong }}>
+          <p className="whitespace-pre-wrap">{result.analysis}</p>
+          {matchedProduct && (
+            <button
+              onClick={() => onOpenProduct(matchedProduct)}
+              className="mt-3 rounded-full px-4 py-2 text-xs font-bold text-white"
+              style={{ background: T.pinkHeart }}
+            >
+              ดูสินค้านี้
+            </button>
+          )}
+        </div>
+      )}
+
+      {status === "not_found" && result?.message && (
+        <p className="mt-3 text-xs font-medium" style={{ color: T.inkSoft }}>
+          {result.message}
+        </p>
+      )}
+
+      {status === "error" && (
+        <p className="mt-3 flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
+          <AlertCircle size={13} />
+          {errorMessage}
+        </p>
+      )}
+    </div>
+  );
 }
 
 async function registerUser(username: string, password: string): Promise<AuthResult> {
@@ -3593,7 +4339,11 @@ function UserApp() {
     <div
       className="min-h-screen w-full"
       style={{
-        background: `linear-gradient(160deg, ${T.bgFrom} 0%, ${T.bgVia} 45%, ${T.bgTo} 100%)`,
+        // ลายจุดจางๆ แทนลายวงจรอิเล็กทรอนิกส์ ทับบน gradient เดิม - ใช้สี T.blueLine ที่มีอยู่แล้วเท่านั้น
+        // (ไม่เพิ่มสีใหม่) เพิ่มความรู้สึก "เทคโนโลยี/อุปกรณ์ไอที" แบบไม่รบกวนโทนสีเดิมของแอป
+        backgroundImage: `radial-gradient(circle at 1px 1px, ${T.blueLine}99 1.5px, transparent 0), linear-gradient(160deg, ${T.bgFrom} 0%, ${T.bgVia} 45%, ${T.bgTo} 100%)`,
+        backgroundSize: "28px 28px, auto",
+        backgroundRepeat: "repeat, no-repeat",
         fontFamily: "'Inter', sans-serif",
       }}
     >
@@ -3618,8 +4368,11 @@ function UserApp() {
                 <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong, letterSpacing: "0.02em" }} className="text-lg font-bold sm:text-xl">
                   KoomSure
                 </span>
-                <span className="hidden text-[10px] font-medium sm:block" style={{ color: T.inkSoft }}>
-                  เทียบราคา ค่าส่ง และราคาย้อนหลัง ก่อนตัดสินใจซื้อ
+                <span className="text-xs font-bold sm:text-base" style={{ color: T.pinkText }}>
+                  เทียบราคา ค่าส่ง และราคาย้อนหลัง ก่อนตัดสินใจซื้อ{" "}
+                  <span className="opacity-70" aria-hidden="true">
+                    📱💻⌚🎧
+                  </span>
                 </span>
               </div>
             </div>
@@ -3646,8 +4399,9 @@ function UserApp() {
                 )}
               </button>
 
-              {/* ปุ่มบัญชีลูกค้า - ตั้งใจให้เห็นชัดเจน (ต่างจาก /admin ที่ไม่มีลิงก์ปรากฏที่ไหนเลย) เพราะผู้ใช้ทั่วไป
-                  ต้อง login เองเพื่อให้รายการโปรดผูกกับบัญชีและอยู่ถาวร ไม่มีเหตุผลต้องซ่อน - คนละระบบกับแอดมินทั้งหมด */}
+              {/* ปุ่มบัญชีลูกค้า - ตั้งใจให้เห็นชัดเจน เพราะผู้ใช้ทั่วไปต้อง login เองเพื่อให้รายการโปรดผูกกับบัญชี
+                  และอยู่ถาวร - คนละระบบ คนละ token กับแอดมินทั้งหมด (ปุ่มแอดมินย้ายไปมุมล่างซ้ายแบบจางๆ แล้ว
+                  ดู AdminEntryButton ท้ายไฟล์ - ตั้งใจให้ไม่เด่น กันผู้ใช้ทั่วไปสับสน) */}
               {userUsername ? (
                 <div className="flex items-center gap-1.5">
                   <span
@@ -3768,8 +4522,13 @@ function UserApp() {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+        <AiAssistantCard onOpenProduct={openModal} />
+
         {!query.trim() && activeCategory === "all" && activePriceRange === "all" && budgetValue <= 0 && !showFavoritesOnly && (
-          <TopDealDashboard onOpenProduct={openModal} />
+          <>
+            <PriceHistorySpotlight onOpenProduct={openModal} />
+            <TopDealDashboard onOpenProduct={openModal} />
+          </>
         )}
 
         <div className="mb-6 flex items-baseline justify-between">
@@ -3810,7 +4569,27 @@ function UserApp() {
       />
 
       {showAuthForm && <UserAuthForm onSuccess={handleAuthSuccess} onCancel={() => setShowAuthForm(false)} />}
+
+      <AdminEntryButton />
     </div>
+  );
+}
+
+// ทางเข้าแอดมินแบบจางๆ ที่มุมล่างซ้าย - จงใจทำให้ไม่เด่น (opacity ต่ำ, ไอคอนเปล่าไม่มีข้อความ) กันผู้ใช้ทั่วไป
+// สับสนว่าเป็นปุ่มอะไร ต่างจากปุ่มเข้าสู่ระบบ/รายการโปรดที่ตั้งใจให้เห็นชัดใน navbar ด้านบน
+function AdminEntryButton() {
+  return (
+    <button
+      onClick={() => {
+        window.location.href = "/admin";
+      }}
+      aria-label="สำหรับผู้ดูแลระบบ"
+      title="สำหรับผู้ดูแลระบบ"
+      className="fixed bottom-4 left-4 z-10 flex h-12 w-12 items-center justify-center rounded-full opacity-30 transition-opacity duration-150 hover:opacity-70"
+      style={{ background: "transparent", color: T.inkSoft }}
+    >
+      <ShieldCheck size={22} strokeWidth={2} />
+    </button>
   );
 }
 

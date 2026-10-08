@@ -1,0 +1,21 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec) - optional convenience. If Render's
+# current schema doesn't match this exactly, just create a Static Site manually instead, using
+# the same build command/publish path/env var below.
+#
+# The rewrite rule is required, not cosmetic: this app checks window.location.pathname itself
+# (see isAdminPath() in src/App.tsx) to decide whether to show the admin login at /admin. A plain
+# static host would 404 on a direct visit to /admin without this rule, since there's no real
+# /admin file - everything has to resolve to index.html and let the app's own JS route it.
+services:
+  - type: web
+    name: koomsure-frontend
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE
+        value: https://koomsure-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
