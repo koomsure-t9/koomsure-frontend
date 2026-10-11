@@ -1262,6 +1262,7 @@ const T = {
   inkSoft: "#7C8A9E",
   blue: "#CFE6FB", // pastel blue button
   blueHover: "#B7DBF8",
+  blueSoft: "#EAF3FC", // soft hover bg for icon-only buttons (e.g. modal close button)
   blueLine: "#E9E4F5",
   lavender: "#EDE7FB",
   pink: "#FBD9E4", // pastel pink
@@ -2840,9 +2841,7 @@ function ProductModal({
             onClick={onClose}
             aria-label="ปิดหน้าต่าง"
             className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full transition-transform duration-150 hover:scale-110 sm:h-9 sm:w-9"
-            // NOTE: T.blueSoft does not exist on the T design-token object (pre-existing bug, left
-            // as-is per this pass's scope - see report). Cast so this compiles as `undefined` like before.
-            style={{ background: (T as Record<string, string>).blueSoft }}
+            style={{ background: T.blueSoft }}
           >
             <X size={18} color={T.inkStrong} strokeWidth={2.5} />
           </button>
@@ -4069,9 +4068,7 @@ function UserAuthForm({
         style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 30px 60px -20px rgba(148,116,196,0.4)" }}
       >
         <div className="mb-5 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-2xl font-bold" style={{ background: T.pink, color: T.pinkText, fontFamily: "'Fraunces', serif" }}>
-            K
-          </div>
+          <img src="/logo.png" alt="KoomSure" className="h-10 w-10 flex-shrink-0 rounded-2xl object-cover" />
           <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-lg font-bold">
             {mode === "login" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
           </span>
@@ -4134,6 +4131,44 @@ function UserAuthForm({
           ยกเลิก
         </button>
       </form>
+    </div>
+  );
+}
+
+// ส่วน hero บนสุดของหน้าแรก - เพิ่มเข้ามาเพื่อให้หน้าแรกดูเป็นแบรนด์จริงจัง ไม่ใช่หน้า demo ที่เริ่มด้วยกล่อง
+// ค้นหาเฉยๆ ใช้โทนสี/ฟอนต์เดิมทั้งหมด (T tokens, Fraunces สำหรับหัวข้อ) ไม่เพิ่มสีใหม่
+function HomeHero() {
+  return (
+    <div
+      className="relative mb-6 overflow-hidden rounded-3xl px-6 py-8 sm:px-10 sm:py-10"
+      style={{
+        background: `linear-gradient(135deg, ${T.pink} 0%, ${T.lavender} 55%, ${T.blue} 100%)`,
+        border: `1px solid ${T.blueLine}`,
+        boxShadow: "0 20px 45px -20px rgba(148,116,196,0.35)",
+      }}
+    >
+      <div
+        className="pointer-events-none absolute -right-10 -top-16 h-56 w-56 rounded-full opacity-40 sm:h-72 sm:w-72"
+        style={{ background: T.pinkHeart, filter: "blur(40px)" }}
+        aria-hidden="true"
+      />
+      <div className="relative flex flex-col items-start gap-3 sm:max-w-lg">
+        <span
+          className="rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider"
+          style={{ background: "rgba(255,255,255,0.65)", color: T.pinkText }}
+        >
+          เปรียบเทียบอย่างมั่นใจ
+        </span>
+        <h1
+          style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }}
+          className="text-2xl font-bold leading-tight sm:text-4xl"
+        >
+          ซื้อของไอทีให้คุ้ม ด้วยข้อมูลราคาจริง
+        </h1>
+        <p className="text-sm leading-relaxed sm:text-base" style={{ color: T.ink }}>
+          เทียบราคา ค่าส่ง และราคาย้อนหลัง จากหลายร้านค้าออนไลน์ในที่เดียว ก่อนตัดสินใจซื้อทุกครั้ง
+        </p>
+      </div>
     </div>
   );
 }
@@ -4353,17 +4388,22 @@ function UserApp() {
 
       <header
         className="sticky top-0 z-10 w-full px-4 py-4 sm:px-6 sm:py-5"
-        style={{ background: "rgba(255,255,255,0.7)", backdropFilter: "blur(10px)", borderBottom: `1px solid ${T.blueLine}` }}
+        style={{
+          background: "rgba(255,255,255,0.75)",
+          backdropFilter: "blur(10px)",
+          borderBottom: `1px solid ${T.blueLine}`,
+          boxShadow: "0 4px 20px -8px rgba(148,116,196,0.18)",
+        }}
       >
         <div className="mx-auto flex max-w-5xl flex-col gap-3 sm:gap-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <div
-                className="flex h-8 w-8 items-center justify-center rounded-2xl font-bold sm:h-9 sm:w-9"
-                style={{ background: T.pink, color: T.pinkText, fontFamily: "'Fraunces', serif" }}
-              >
-                K
-              </div>
+              <img
+                src="/logo.png"
+                alt="KoomSure"
+                className="h-10 w-10 flex-shrink-0 rounded-2xl object-cover sm:h-11 sm:w-11"
+                style={{ boxShadow: "0 2px 10px -2px rgba(148,116,196,0.35)" }}
+              />
               <div className="flex flex-col leading-tight">
                 <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong, letterSpacing: "0.02em" }} className="text-lg font-bold sm:text-xl">
                   KoomSure
@@ -4522,6 +4562,7 @@ function UserApp() {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+        <HomeHero />
         <AiAssistantCard onOpenProduct={openModal} />
 
         {!query.trim() && activeCategory === "all" && activePriceRange === "all" && budgetValue <= 0 && !showFavoritesOnly && (
