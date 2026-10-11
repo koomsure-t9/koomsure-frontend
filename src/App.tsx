@@ -3709,6 +3709,15 @@ async function fetchLiveProducts(): Promise<Product[]> {
   return PRODUCTS;
 }
 
+// ค้นหาด้วยคีย์เวิร์ด (ช่องค้นหาบน navbar) - เรียก backend แทนการกรองด้วย substring ง่ายๆ ฝั่งหน้าเว็บเอง เพราะ
+// ต้องใช้ตรรกะจับคู่คำเดียวกับที่แชท Koomy ใช้ (ชื่อแบรนด์/รุ่น/สเปก + ตารางคำทับศัพท์ไทย) ไม่สร้างลิสต์คีย์เวิร์ด
+// ชุดที่สองแยกไว้ในฝั่งหน้าเว็บ - ดู services/catalog/query/search_products_query.py (backend) สำหรับ
+// ตรรกะจริง ไฟล์นี้แค่เรียกและแสดงผล
+async function searchProducts(query: string): Promise<Product[]> {
+  const data = await apiRequest("GET", `${API_BASE}/api/products/search?q=${encodeURIComponent(query)}`);
+  return Array.isArray(data) ? (data as Product[]) : [];
+}
+
 // ============================================================================
 // FEATURE: บัญชีลูกค้าทั่วไป (username + password - ไม่เก็บอีเมลตาม PDPA, ไม่เกี่ยวกับระบบแอดมินเลย)
 // จุดประสงค์หลักคือให้ "รายการโปรด" ผูกกับบัญชีจริง อยู่ถาวรข้าม login/logout/เครื่องอื่น
@@ -4282,6 +4291,10 @@ function WelcomeScreen({ onSkip, onLoginSuccess }: { onSkip: () => void; onLogin
 
 function UserApp() {
   const [query, setQuery] = useState("");
+  // ผลค้นหาจาก backend (ดู searchProducts) - ค้างค่าผลลัพธ์เดิมไว้ระหว่างรอ debounce/fetch รอบใหม่ กัน
+  // หน้าจอกะพริบเป็น "ไม่พบสินค้า" ทุกครั้งที่พิมพ์เพิ่มทีละตัวอักษร
+  const [searchResults, setSearchResults] = useState<Product[]>([]);
+  const [searching, setSearching] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(() => new Set());
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [activeCategory, setActiveCategory] = useState("all");
@@ -4304,6 +4317,36 @@ function UserApp() {
     localStorage.getItem(USER_USERNAME_STORAGE_KEY)
   );
   const [showAuthForm, setShowAuthForm] = useState(false);
+
+  // ค้นหาแบบ debounce (300ms) เรียก backend แทนกรอง PRODUCTS เองฝั่งหน้าเว็บ - ตั้งใจไม่ล้าง searchResults
+  // ทันทีตอน query เปลี่ยน (เคลียร์เฉพาะตอน query ว่างเปล่าเท่านั้น) เพื่อให้ผลลัพธ์เดิมค้างอยู่บนจอระหว่างรอ
+  // คำค้นใหม่ กันกะพริบเป็น "ไม่พบสินค้า" ทุกครั้งที่พิมพ์
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      searchProducts(q)
+        .then((products) => {
+          if (!cancelled) setSearchResults(products);
+        })
+        .catch(() => {
+          if (!cancelled) setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
 
   // มี token ตั้งแต่ mount (restore จาก localStorage) หรือเพิ่ง login/สมัครสมาชิกสำเร็จ -> โหลดรายการโปรดจริงจาก backend
   useEffect(() => {
@@ -4388,13 +4431,9 @@ function UserApp() {
   );
 
   const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = PRODUCTS;
-    if (q) {
-      list = list.filter(
-        (p) => p.model_number.toLowerCase().includes(q) || p.product_name.toLowerCase().includes(q)
-      );
-    }
+    // มีคำค้นอยู่ -> ใช้ผลลัพธ์จาก backend (searchProducts, ตรรกะเดียวกับแชท Koomy) แทนกรอง substring เอง
+    // ไม่มีคำค้น -> แสดงสินค้าทั้งหมดตามปกติ ตัวกรองอื่น (หมวดหมู่/ช่วงราคา/งบ/รายการโปรด) ใช้ร่วมกับทั้งสองกรณีเหมือนเดิม
+    let list = query.trim() ? searchResults : PRODUCTS;
     if (activeCategory !== "all") {
       list = list.filter((p) => categorize(p) === activeCategory);
     }
@@ -4417,7 +4456,7 @@ function UserApp() {
       list = list.filter((p) => favorites.has(p.product_id));
     }
     return list;
-  }, [query, activeCategory, activePriceRange, budgetValue, showFavoritesOnly, favorites]);
+  }, [query, searchResults, activeCategory, activePriceRange, budgetValue, showFavoritesOnly, favorites]);
 
   // เช็คว่ามีตัวกรอง/ค้นหา/งบประมาณตัวไหน active อยู่บ้าง เพื่อโชว์ปุ่ม "ล้างตัวกรอง" เฉพาะตอนจำเป็น (ไม่รก UI ตอนไม่มีอะไรให้ล้าง)
   // นอกจาก 3 ช่องที่โจทย์ระบุ (ค้นหา/งบประมาณ/หมวดหมู่) ยังรวมช่วงราคาและรายการโปรดด้วย เพื่อให้ผลลัพธ์
@@ -4584,12 +4623,19 @@ function UserApp() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="ค้นหารุ่นสินค้า เช่น iPhone 16"
+                placeholder="ค้นหารุ่นสินค้า เช่น iPhone 16, เคส, หูฟัง"
                 className="w-full rounded-full py-3 pl-10 pr-4 text-sm outline-none transition-shadow duration-150 sm:py-2.5"
                 style={{ background: T.paper, color: T.inkStrong, border: `1px solid ${T.blueLine}` }}
                 onFocus={(e) => (e.currentTarget.style.boxShadow = `0 0 0 3px ${T.pink}`)}
                 onBlur={(e) => (e.currentTarget.style.boxShadow = "none")}
               />
+              {searching && (
+                <Loader2
+                  size={15}
+                  className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 animate-spin"
+                  style={{ color: T.inkSoft }}
+                />
+              )}
             </div>
 
             <div className="relative w-full sm:max-w-[230px]">
