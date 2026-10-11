@@ -53,22 +53,6 @@ interface CompareRow extends Listing, ListingDetails {
   isCheapest: boolean;
 }
 
-// Deal-dashboard card data - "discount" mode uses original_price/discount_pct,
-// "drop" mode uses previous_price/drop_amount/drop_pct (see DealCard's `mode` prop).
-interface Deal {
-  product_id: string;
-  product_name: string;
-  image: string;
-  platform: string;
-  current_price: number;
-  url: string;
-  original_price?: number;
-  discount_pct?: number;
-  previous_price?: number;
-  drop_amount?: number;
-  drop_pct?: number;
-}
-
 // เปลี่ยนจาก const เป็น let: การ์ดสินค้า/ตัวกรอง/RELATED_PRODUCTS ฯลฯ ทั้งไฟล์อ้างอิง PRODUCTS ตัวนี้โดยตรง
 // (ไม่ได้ผ่าน props) เพื่อไม่ต้องแก้โค้ดหลายพันบรรทัดที่มีอยู่แล้ว จึง "mutate ข้อมูลในอาเรย์เดิม" แทนการสร้างใหม่
 // ดูฟังก์ชัน applyLiveProducts() ท้ายไฟล์ที่ทำหน้าที่นี้ตอนโหลดข้อมูลจริงจาก backend
@@ -1958,99 +1942,6 @@ function CompareTable({ productId }: { productId: string }) {
 }
 
 // ============================================================================
-// FEATURE: Top Deal Dashboard (หน้าแรก)
-// ============================================================================
-// ทั้งสอง endpoint คำนวณจากข้อมูลจริงใน Postgres ฝั่ง backend แล้ว (products/listings/coupons
-// สำหรับ top-discount, price_history สำหรับ price-drop) ดู koomsure-backend/src/koom_sure_backend/api/services/deals
-// price-drop จะเป็น array ว่างจนกว่าจะมีสแนปช็อตราคาสะสมอย่างน้อย 2 รอบต่อสินค้า+แพลตฟอร์ม - เป็นสถานะที่ถูกต้องจริง ไม่ใช่บั๊ก
-function fetchTopDiscountDeals(limit = 10): Promise<Deal[]> {
-  return fetch(`${API_BASE}/api/deals/top-discount?limit=${limit}`).then((r) => {
-    if (!r.ok) throw new Error("โหลดดีลลดแรงสุดไม่สำเร็จ");
-    return r.json() as Promise<Deal[]>;
-  });
-}
-
-function fetchPriceDropDeals(limit = 10): Promise<Deal[]> {
-  return fetch(`${API_BASE}/api/deals/price-drop?limit=${limit}`).then((r) => {
-    if (!r.ok) throw new Error("โหลดดีลราคาตกไม่สำเร็จ");
-    return r.json() as Promise<Deal[]>;
-  });
-}
-
-// STEP 4: การ์ดดีลเดี่ยว - รูป, ชื่อสินค้า, แพลตฟอร์ม, ราคาปัจจุบัน+ราคาเดิมขีดฆ่า, badge %ลด/จำนวนที่ลด
-function DealCard({
-  deal,
-  mode,
-  onOpenProduct,
-}: {
-  deal: Deal;
-  mode: "discount" | "drop";
-  onOpenProduct: (product: Product) => void;
-}) {
-  const platform = PLATFORM_STYLE[deal.platform] || { bg: "#eee", fg: "#333" };
-  const product = PRODUCTS.find((p) => p.product_id === deal.product_id);
-
-  const badgeText =
-    mode === "discount" ? `-${Math.round(deal.discount_pct ?? 0)}%` : `-฿${fmtBaht(Math.round(deal.drop_amount ?? 0))}`;
-
-  return (
-    <div
-      className="flex flex-col overflow-hidden rounded-3xl transition-all duration-300 ease-out"
-      style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 10px 24px -14px rgba(148,116,196,0.28)" }}
-      onMouseEnter={(e) => (e.currentTarget.style.transform = "translateY(-4px)")}
-      onMouseLeave={(e) => (e.currentTarget.style.transform = "translateY(0)")}
-    >
-      <div className="relative" style={{ background: T.paper }}>
-        {deal.image ? (
-          <img src={resolveImageUrl(deal.image)} alt={deal.product_name} className="h-36 w-full object-contain p-5" />
-        ) : (
-          <div className="flex h-36 w-full items-center justify-center text-xs" style={{ background: T.bgVia, color: T.inkSoft }}>
-            ไม่มีรูปสินค้า
-          </div>
-        )}
-        <span
-          className="absolute left-3 top-3 rounded-full px-2.5 py-1 text-xs font-extrabold shadow-sm"
-          style={{ background: T.pinkHeart, color: "#FFFFFF" }}
-        >
-          {badgeText}
-        </span>
-      </div>
-
-      <div className="flex flex-1 flex-col gap-2 px-4 py-4">
-        <span
-          className="w-fit rounded-full px-2 py-0.5 text-[11px] font-bold"
-          style={{ background: platform.bg, color: platform.fg }}
-        >
-          {deal.platform}
-        </span>
-        <span className="line-clamp-2 text-sm font-semibold leading-snug" style={{ color: T.inkStrong }}>
-          {deal.product_name}
-        </span>
-
-        <div className="mt-1 flex items-baseline gap-2">
-          <span style={{ fontFamily: "'Fraunces', serif", color: T.pinkText }} className="text-lg font-bold">
-            ฿{fmtBaht(Math.round(deal.current_price))}
-          </span>
-          <span className="text-xs line-through" style={{ color: T.inkSoft }}>
-            ฿{fmtBaht(Math.round((mode === "discount" ? deal.original_price : deal.previous_price) ?? 0))}
-          </span>
-        </div>
-
-        <button
-          onClick={() => product && onOpenProduct(product)}
-          disabled={!product}
-          className="mt-2 flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2.5 text-xs font-bold transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
-          style={{ background: T.blue, color: T.inkStrong }}
-        >
-          ดูราคาเปรียบเทียบ
-          <ExternalLink size={13} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================================
 // FEATURE: "📈 เช็กราคาย้อนหลังก่อนซื้อ" - ส่วนโชว์ killer feature บนหน้าหลัก
 // ============================================================================
 // เลือกเฉพาะสินค้าที่มีข้อมูลประวัติราคาจริงอยู่แล้ว (has_price_history จาก GET /api/products - ไม่ต้อง
@@ -2103,103 +1994,6 @@ function PriceHistorySpotlight({ onOpenProduct }: { onOpenProduct: (product: Pro
           );
         })}
       </div>
-    </section>
-  );
-}
-
-interface DealsState {
-  status: "loading" | "success" | "error";
-  deals: Deal[];
-}
-
-// STEP 5: Dashboard หลัก - แท็บสลับ "ลดแรงสุด" / "ราคาตกล่าสุด" + grid การ์ด + loading/empty state
-function TopDealDashboard({ onOpenProduct }: { onOpenProduct: (product: Product) => void }) {
-  const [tab, setTab] = useState("discount"); // "discount" | "drop"
-  const [state, setState] = useState<DealsState>({ status: "loading", deals: [] });
-
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading", deals: [] });
-    const fetcher = tab === "discount" ? fetchTopDiscountDeals(10) : fetchPriceDropDeals(10);
-    fetcher
-      .then((deals) => {
-        if (cancelled) return;
-        setState({ status: "success", deals });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setState({ status: "error", deals: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tab]);
-
-  return (
-    <section className="mb-8">
-      <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="flex items-center gap-1.5 text-lg font-bold" style={{ color: T.inkStrong }}>
-          <TrendingUp size={18} style={{ color: T.pinkText }} />
-          ดีลเด็ดวันนี้
-        </h2>
-      </div>
-      <p className="mb-4 text-xs font-medium" style={{ color: T.inkSoft }}>
-        คำนวณจากราคาจริงที่เก็บสะสมไว้ ไม่ใช่ตัวเลขประมาณ
-      </p>
-      <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
-        <div className="flex gap-2">
-          {[
-            { id: "discount", label: "ลดแรงสุด" },
-            { id: "drop", label: "ราคาตกล่าสุด" },
-          ].map((t) => {
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className="rounded-full px-4 py-2 text-sm font-bold transition-colors duration-150 sm:py-1.5 sm:text-xs"
-                style={{
-                  background: active ? T.pinkHeart : T.paper,
-                  color: active ? "#FFFFFF" : T.inkStrong,
-                  border: `1px solid ${active ? T.pinkHeart : T.blueLine}`,
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {state.status === "loading" && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="h-64 animate-pulse rounded-3xl" style={{ background: T.bgVia }} />
-          ))}
-        </div>
-      )}
-
-      {state.status === "error" && (
-        <div className="rounded-3xl border border-dashed py-12 text-center text-sm" style={{ borderColor: T.blueLine, color: T.inkSoft }}>
-          โหลดดีลไม่สำเร็จ ลองใหม่อีกครั้ง
-        </div>
-      )}
-
-      {state.status === "success" && state.deals.length === 0 && (
-        <div className="rounded-3xl border border-dashed py-12 text-center text-sm" style={{ borderColor: T.blueLine, color: T.inkSoft }}>
-          {tab === "discount"
-            ? "ยังไม่มีดีลลดราคาในตอนนี้ ลองกลับมาเช็คใหม่อีกครั้ง"
-            : "ยังไม่มีข้อมูลเพียงพอ ระบบต้องเก็บราคาซ้ำอย่างน้อย 2 รอบถึงจะรู้ว่าราคาตกลงมั้ย 🌱"}
-        </div>
-      )}
-
-      {state.status === "success" && state.deals.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {state.deals.map((deal) => (
-            <DealCard key={deal.product_id + deal.platform} deal={deal} mode={tab === "discount" ? "discount" : "drop"} onOpenProduct={onOpenProduct} />
-          ))}
-        </div>
-      )}
     </section>
   );
 }
@@ -4087,7 +3881,7 @@ function HomeHero() {
           เทียบราคาอุปกรณ์อิเล็กทรอนิกส์ก่อนตัดสินใจซื้อ
         </h1>
         <p className="text-sm leading-relaxed sm:text-base" style={{ color: T.ink }}>
-          รวมราคาจากหลายร้านค้าออนไลน์ พร้อมประวัติราคาย้อนหลังเท่าที่ระบบเก็บได้ ไว้ในที่เดียว
+          รวมราคาและประวัติราคาย้อนหลัง จากหลายร้านค้าออนไลน์ ไว้ในที่เดียว
         </p>
         <p className="text-xs" style={{ color: T.inkSoft }}>
           ราคาอ้างอิง ณ เวลาที่ระบบสแกน โปรดตรวจสอบกับร้านค้าอีกครั้งก่อนซื้อ
@@ -4278,10 +4072,10 @@ function WelcomeScreen({ onSkip, onLoginSuccess }: { onSkip: () => void; onLogin
         />
         <div className="absolute bottom-10 left-8 right-8">
           <span style={{ fontFamily: "'Fraunces', serif", color: "#FFFFFF" }} className="text-2xl font-bold drop-shadow-sm lg:text-3xl">
-            ช้อปอย่างมั่นใจ ด้วยข้อมูลราคาจริง
+            เทียบราคาอุปกรณ์อิเล็กทรอนิกส์ก่อนตัดสินใจซื้อ
           </span>
           <p className="mt-2 text-sm font-medium" style={{ color: "rgba(255,255,255,0.92)" }}>
-            เทียบราคา ค่าส่ง และราคาย้อนหลัง จากหลายร้านค้าออนไลน์ในที่เดียว
+            เทียบราคาและดูแนวโน้มราคาย้อนหลัง จากหลายร้านค้าในที่เดียว
           </p>
         </div>
       </div>
@@ -4715,10 +4509,7 @@ function UserApp() {
         <HomeHero />
 
         {!query.trim() && activeCategory === "all" && activePriceRange === "all" && budgetValue <= 0 && !showFavoritesOnly && (
-          <>
-            <PriceHistorySpotlight onOpenProduct={openModal} />
-            <TopDealDashboard onOpenProduct={openModal} />
-          </>
+          <PriceHistorySpotlight onOpenProduct={openModal} />
         )}
 
         <div className="mb-6 flex items-baseline justify-between">

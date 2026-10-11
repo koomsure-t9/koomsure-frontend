@@ -7,7 +7,7 @@ Only refactor structure if actually asked to.
 
 ## AI Assistant (added 2026-10-08)
 
-`AiAssistantCard` on the homepage (always visible, above `TopDealDashboard`) and
+`AiAssistantCard` on the homepage (always visible) and
 `AiAnalyzeProductButton` inside `ProductModal` both call
 `POST /api/ai-assistant/analyze` (`fetchAiAnalysis`). The homepage card sends free text
 (`{query}}`) and the backend fuzzy-matches it to a product; the in-modal button already knows the
@@ -58,7 +58,12 @@ its state resets when switching between related products inside the same modal i
   (compact, axis-less, colored by trend direction) when that product has ≥2 distinct price-history
   dates — silently renders nothing otherwise, no placeholder clutter. The full `PriceHistoryChart`
   (with legend/axis/tooltip, per-platform lines) stays in `ProductModal` as the detailed drill-in
-  view. `TopDealDashboard` got a one-line caption reinforcing "real tracked prices, not estimates."
+  view.
+- **The "ดีลเด็ด" (Top Deal) homepage section was removed entirely** (`TopDealDashboard`,
+  `DealCard`, the `Deal` interface, `fetchTopDiscountDeals`/`fetchPriceDropDeals`) along with the
+  backend's whole `deals` module (`GET /api/deals/top-discount`, `/price-drop`) - no remaining
+  references anywhere. `PriceHistorySpotlight` is now the homepage's only "sell the price-history
+  feature" section.
 - **Admin products tab has a "refresh prices" button** (`RotateCcw` icon, only rendered when
   `entityKey === "products"` in `AdminEntityTable`) that calls the real
   `refreshProductPrices(productId)` helper → `POST /api/admin/products/{id}/refresh-prices`, which
