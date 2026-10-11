@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
 import type { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, ShieldCheck, User, Sparkles, Loader2 } from "lucide-react";
+import { Search, X, ArrowDown, ArrowUp, ArrowLeft, Minus, ExternalLink, Tag, Heart, TrendingUp, AlertCircle, RotateCcw, LogIn, LogOut, Plus, Pencil, Trash2, ShieldCheck, User, Sparkles, Loader2, Send } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -2663,62 +2663,6 @@ function ListingRow({ listing, isBest }: { listing: Listing; isBest: boolean }) 
   );
 }
 
-// ปุ่ม "วิเคราะห์สินค้านี้ด้วย AI" ในหน้ารายละเอียดสินค้า - รู้ product_id อยู่แล้วจึงส่งตรงไปที่ backend
-// โดยไม่ต้องผ่านขั้นตอนจับคู่ข้อความแบบ AiAssistantCard บนหน้าหลัก ผลลัพธ์แม่นยำกว่าเสมอ
-function AiAnalyzeProductButton({ productId }: { productId: string }) {
-  const [status, setStatus] = useState<AiAssistantStatus>("idle");
-  const [analysis, setAnalysis] = useState("");
-  const [errorMessage, setErrorMessage] = useState("");
-
-  const handleClick = async () => {
-    setStatus("loading");
-    setErrorMessage("");
-    try {
-      const data = await fetchAiAnalysis({ product_id: productId });
-      setAnalysis(data.analysis || "");
-      setStatus("success");
-    } catch (err) {
-      setErrorMessage((err as Error).message || "เกิดข้อผิดพลาด");
-      setStatus("error");
-    }
-  };
-
-  if (status === "idle") {
-    return (
-      <button
-        onClick={handleClick}
-        className="mb-4 flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold text-white"
-        style={{ background: T.pinkHeart }}
-      >
-        <Sparkles size={13} />
-        วิเคราะห์สินค้านี้ด้วย AI
-      </button>
-    );
-  }
-
-  return (
-    <div className="mb-4 rounded-2xl p-3.5 text-sm" style={{ background: T.bgVia, color: T.inkStrong }}>
-      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-bold" style={{ color: T.pinkText }}>
-        <Sparkles size={13} />
-        KoomSure AI
-      </div>
-      {status === "loading" && (
-        <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: T.inkSoft }}>
-          <Loader2 size={13} className="animate-spin" />
-          กำลังวิเคราะห์...
-        </span>
-      )}
-      {status === "success" && <p className="whitespace-pre-wrap text-xs leading-relaxed">{analysis}</p>}
-      {status === "error" && (
-        <p className="flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
-          <AlertCircle size={12} />
-          {errorMessage}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function ProductModal({
   product,
   visible,
@@ -2726,6 +2670,7 @@ function ProductModal({
   isFavorite,
   onToggleFavorite,
   onSelectRelated,
+  onAskAi,
 }: {
   product: Product | null;
   visible: boolean;
@@ -2733,6 +2678,7 @@ function ProductModal({
   isFavorite: boolean;
   onToggleFavorite: (productId: string) => void;
   onSelectRelated: (product: Product) => void;
+  onAskAi: (productName: string) => void;
 }) {
   // iOS/iPadOS Safari คำนวณหน่วย vh ผิดพลาดเมื่ออยู่ใน iframe (เช่น Claude Artifacts) โดยเฉพาะตอนหมุนจอ
   // จึงวัดความสูงจอจริงด้วย JS แทนพึ่งพา CSS vh อย่างเดียว แล้วอัปเดตทุกครั้งที่ resize/orientation เปลี่ยน
@@ -2909,7 +2855,14 @@ function ProductModal({
           </div>
 
           <div className="mt-4">
-            <AiAnalyzeProductButton key={product.product_id} productId={product.product_id} />
+            <button
+              onClick={() => onAskAi(product.product_name)}
+              className="flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold text-white"
+              style={{ background: T.pinkHeart }}
+            >
+              <Sparkles size={13} />
+              ถาม AI เกี่ยวกับสินค้านี้
+            </button>
           </div>
 
           <div className="my-5 border-t-2 border-dashed" style={{ borderColor: T.blueLine }} />
@@ -3003,6 +2956,13 @@ interface AdminEntityConfig {
 // บัญชีลูกค้าทั่วไป (username+password, favorites) - session อยู่ถาวรใน localStorage
 const USER_TOKEN_STORAGE_KEY = "koomsure_user_token";
 const USER_USERNAME_STORAGE_KEY = "koomsure_user_username";
+
+// ใช้ร่วมกันทั้งจาก UserAuthForm (modal) และ WelcomeScreen (splash/welcome flow ตอนเปิดแอปครั้งแรก) -
+// สอง UI คนละหน้าตา แต่ผลลัพธ์หลัง login สำเร็จต้องเหมือนกันทุกครั้ง: เขียน token/username ชุดเดียวกัน
+function persistUserSession(token: string, username: string) {
+  localStorage.setItem(USER_TOKEN_STORAGE_KEY, token);
+  localStorage.setItem(USER_USERNAME_STORAGE_KEY, username);
+}
 
 // บัญชีแอดมิน (username+password, admin CRUD) - คนละระบบ คนละ token โดยสิ้นเชิงจากลูกค้าทั่วไป
 // ตั้งใจไม่ persist ไว้ใน localStorage (ต้อง login ใหม่ทุกครั้งที่ปิดแท็บ/reload /admin - เหมาะกับ
@@ -3771,215 +3731,173 @@ async function extractErrorMessage(res: Response, fallback: string): Promise<str
 }
 
 // ============================================================================
-// FEATURE: KoomSure AI - วิเคราะห์สินค้าด้วย Gemini โดยอิงข้อมูลจริงของแอป (ราคา/ค่าส่ง/ราคาย้อนหลัง)
-// Backend เป็นคนคำนวณตัวเลขทั้งหมดเอง (ดู services/ai_assistant/analysis_facts.py) - Gemini มีหน้าที่
-// แค่เรียบเรียงเป็นภาษาที่เข้าใจง่าย ไม่ได้สร้างตัวเลขขึ้นมาเอง
+// FEATURE: KoomSure AI - แชทบอทสนทนาได้จริง (หลายรอบ) อิงข้อมูลจริงของแอปเสมอ (ราคา/ค่าส่ง/ราคาย้อนหลัง/
+// สินค้าตามหมวด+งบ) - backend เป็นคนคำนวณตัวเลขทั้งหมดเอง (ดู services/ai_assistant/) ส่งมาเป็น "ข้อเท็จจริง"
+// ให้ Gemini แค่เรียบเรียงเป็นภาษาที่เข้าใจง่ายและสนทนาต่อเนื่อง ไม่ได้สร้างตัวเลขขึ้นมาเอง
+//
+// ไม่มี session เก็บฝั่ง backend เลย - ส่งประวัติแชททั้งหมดไปทุกครั้งที่ถามต่อ (เหมือนวิธีที่ Gemini API
+// รองรับ multi-turn อยู่แล้วโดยธรรมชาติ) ข้อดี: ใช้งานได้แม้ผู้ใช้ยังไม่ login เลย (ไม่ต้องมี user id ผูกไว้)
+// ข้อเสีย (ยอมรับได้ตอนนี้): ประวัติแชทหายไปถ้า reload หน้า - ยังไม่ persist ข้าม session
 // ============================================================================
-interface AiAnalysisResult {
-  matched: boolean;
-  product_id: string | null;
-  product_name: string | null;
-  analysis: string | null;
-  message: string | null;
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
-type AiAnalyzeRequestBody =
-  | { query: string }
-  | { product_id: string }
-  | { category: string; intent: string };
-
-async function fetchAiAnalysis(body: AiAnalyzeRequestBody): Promise<AiAnalysisResult> {
-  const res = await fetch(`${API_BASE}/api/ai-assistant/analyze`, {
+async function fetchChatReply(messages: ChatMessage[]): Promise<{ reply: string }> {
+  const res = await fetch(`${API_BASE}/api/ai-assistant/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ messages }),
   });
-  if (!res.ok) throw new Error(await extractErrorMessage(res, "วิเคราะห์ไม่สำเร็จ ลองใหม่อีกครั้ง"));
-  return res.json() as Promise<AiAnalysisResult>;
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "ส่งข้อความไม่สำเร็จ ลองใหม่อีกครั้ง"));
+  return res.json() as Promise<{ reply: string }>;
 }
 
-type AiAssistantStatus = "idle" | "loading" | "success" | "not_found" | "error";
+// seed: ตั้งค่าเพื่อ "เปิดแชทแล้วถามคำถามนี้ให้อัตโนมัติทันที" - ใช้ nonce (เปลี่ยนค่าทุกครั้งที่กด แม้ข้อความ
+// จะซ้ำเดิม) เพื่อให้ effect ด้านล่าง trigger ซ้ำได้ (เช่น กดถามสินค้าเดียวกันสองครั้งติดกันหลังปิดแชทไปแล้ว)
+interface ChatSeed {
+  text: string;
+  nonce: number;
+}
 
-// หมวดหมู่สำหรับค้นหาแบบ "กรอง" ใน KoomSure AI - ใช้ id เดียวกับ CATEGORIES ของช่องค้นหาหลัก (คนละ state กัน)
-const AI_CATEGORIES = [
-  { id: "phone", label: "สมาร์ทโฟน" },
-  { id: "tablet", label: "แท็บเล็ต & โน้ตบุ๊ค" },
-  { id: "watch", label: "สมาร์ทวอทช์" },
-  { id: "accessory", label: "อุปกรณ์เสริม & หูฟัง" },
-];
+// ปุ่มแชทลอยมุมล่างขวา เปิดได้จากทุกหน้า ไม่ว่าจะ login อยู่หรือไม่ก็ตาม (ตั้งใจให้เป็นจุดเดียวของฟีเจอร์ AI
+// ทั้งหมด - แทนที่การ์ดค้นหาบนหน้าแรกและปุ่มวิเคราะห์สินค้าเดิมที่เป็นแบบถามครั้งเดียวจบ)
+function ChatWidget({ seed }: { seed: ChatSeed | null }) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-// ปุ่มลัดต้องเลือกหมวดหมู่ก่อนเสมอ แล้วกดปุ่มนี้เพื่อให้ Gemini วิเคราะห์ "สินค้าที่ตรงเงื่อนไขนี้ที่สุด" ในหมวดนั้น
-// ทันที (ไม่ต้องพิมพ์อะไรเพิ่ม) - ทั้ง 3 ตัวเลือกนี้คำนวณได้จริงจากข้อมูลที่มีอยู่แล้ว (ราคา/สต๊อก/ส่วนลด/ประวัติราคา)
-// ไม่มีปุ่มไหนที่ต้องเดาหรือสร้างข้อมูลที่ไม่มีอยู่จริง (ตัดปุ่ม "ราคาดีที่สุด" ออกแล้ว เพราะความหมายซ้ำกับ
-// "ราคาถูกที่สุด" มากเกินไปในมุมมองผู้ใช้ - รวมตรรกะ "มีของพร้อมส่งด้วย" เข้าไปในปุ่ม "ราคาถูกที่สุด" ปุ่มเดียวแทน)
-const AI_QUICK_INTENTS: { id: string; label: string }[] = [
-  { id: "cheapest", label: "ราคาถูกที่สุด" },
-  { id: "biggest_discount", label: "ลดราคามากที่สุด" },
-  { id: "price_history", label: "ดูประวัติราคา" },
-];
+  const sendMessage = useCallback(
+    async (text: string, history: ChatMessage[]) => {
+      const trimmed = text.trim();
+      if (!trimmed || sending) return;
+      const nextMessages: ChatMessage[] = [...history, { role: "user", content: trimmed }];
+      setMessages(nextMessages);
+      setInput("");
+      setSending(true);
+      setError("");
+      try {
+        const data = await fetchChatReply(nextMessages);
+        setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      } catch (err) {
+        setError((err as Error).message || "เกิดข้อผิดพลาด");
+      } finally {
+        setSending(false);
+      }
+    },
+    [sending]
+  );
 
-function AiAssistantCard({ onOpenProduct }: { onOpenProduct: (product: Product) => void }) {
-  const [query, setQuery] = useState("");
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [status, setStatus] = useState<AiAssistantStatus>("idle");
-  const [result, setResult] = useState<AiAnalysisResult | null>(null);
-  const [errorMessage, setErrorMessage] = useState("");
+  useEffect(() => {
+    if (!seed) return;
+    setOpen(true);
+    sendMessage(seed.text, messages);
+    // ตั้งใจ trigger แค่ตอน seed.nonce เปลี่ยนเท่านั้น (ไม่ใช่ทุกครั้งที่ messages/sendMessage เปลี่ยน)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed?.nonce]);
 
-  const runAnalysis = async (body: AiAnalyzeRequestBody) => {
-    setStatus("loading");
-    setErrorMessage("");
-    try {
-      const data = await fetchAiAnalysis(body);
-      setResult(data);
-      setStatus(data.matched ? "success" : "not_found");
-    } catch (err) {
-      setErrorMessage((err as Error).message || "เกิดข้อผิดพลาด");
-      setStatus("error");
-    }
-  };
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, sending]);
 
-  const handleAnalyze = (e: FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!query.trim() || status === "loading") return;
-    runAnalysis({ query: query.trim() });
+    sendMessage(input, messages);
   };
-
-  const handleQuickIntent = (intent: string) => {
-    if (!activeCategory || status === "loading") return;
-    runAnalysis({ category: activeCategory, intent });
-  };
-
-  const hasAnythingToClear = query.trim() !== "" || activeCategory !== null || status !== "idle";
-
-  const handleClear = () => {
-    setQuery("");
-    setActiveCategory(null);
-    setStatus("idle");
-    setResult(null);
-    setErrorMessage("");
-  };
-
-  const matchedProduct = result?.product_id ? PRODUCTS.find((p) => p.product_id === result.product_id) : undefined;
 
   return (
-    <div
-      className="mb-6 rounded-3xl p-5 sm:p-6"
-      style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 10px 28px -14px rgba(148,116,196,0.28)" }}
-    >
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Sparkles size={18} style={{ color: T.pinkText }} />
-          <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-lg font-bold">
-            KoomSure AI
-          </span>
-        </div>
-        {hasAnythingToClear && (
-          <button
-            type="button"
-            onClick={handleClear}
-            className="flex flex-shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold transition-colors duration-150"
-            style={{ background: "transparent", color: T.pinkText, border: `1.5px dashed ${T.pinkHeart}` }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = T.pink)}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            <RotateCcw size={12} strokeWidth={2.5} />
-            ล้างข้อมูล
-          </button>
-        )}
-      </div>
-      <p className="mb-3 text-sm font-medium" style={{ color: T.inkSoft }}>
-        ไม่รู้จะซื้ออะไรดี? ลองให้ AI ช่วยวิเคราะห์จากข้อมูลจริงในระบบ
-      </p>
+    <>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-label={open ? "ปิดแชท KoomSure AI" : "เปิดแชท KoomSure AI"}
+        className="fixed bottom-5 right-5 z-[90] flex h-14 w-14 items-center justify-center rounded-full text-white transition-transform duration-150 hover:scale-105"
+        style={{ background: T.pinkHeart, boxShadow: "0 12px 28px -8px rgba(178,62,104,0.5)" }}
+      >
+        {open ? <X size={24} /> : <Sparkles size={24} />}
+      </button>
 
-      <form onSubmit={handleAnalyze} className="flex flex-col gap-2 sm:flex-row">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="พิมพ์สิ่งที่อยากค้นหา เช่น iPhone 16, โน้ตบุ๊ก, หูฟัง"
-          className="flex-1 rounded-xl px-3.5 py-2.5 text-sm outline-none"
-          style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
-        />
-        <button
-          type="submit"
-          disabled={!query.trim() || status === "loading"}
-          className="flex items-center justify-center gap-1.5 rounded-full px-5 py-2.5 text-sm font-bold text-white disabled:opacity-60"
-          style={{ background: T.pinkHeart }}
+      {open && (
+        <div
+          className="fixed bottom-24 right-5 z-[90] flex h-[32rem] max-h-[70vh] w-[22rem] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-3xl"
+          style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 30px 60px -20px rgba(148,116,196,0.4)" }}
         >
-          {status === "loading" ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-          {status === "loading" ? "กำลังวิเคราะห์..." : "วิเคราะห์"}
-        </button>
-      </form>
-
-      {/* หรือเลือกหมวดหมู่ แล้วกดปุ่มลัดด้านล่างได้เลยโดยไม่ต้องพิมพ์ - คลิกหมวดเดิมซ้ำเพื่อยกเลิกการเลือก */}
-      <p className="mb-1.5 mt-3 text-xs font-semibold" style={{ color: T.inkSoft }}>
-        หรือเลือกหมวดหมู่สินค้า แล้วกดปุ่มลัดด้านล่าง:
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {AI_CATEGORIES.map((cat) => {
-          const active = activeCategory === cat.id;
-          return (
-            <button
-              key={cat.id}
-              type="button"
-              onClick={() => setActiveCategory(active ? null : cat.id)}
-              className="rounded-full px-3 py-1.5 text-xs font-bold transition-colors duration-150"
-              style={{
-                background: active ? T.pinkHeart : T.bgVia,
-                color: active ? "#FFFFFF" : T.inkStrong,
-                border: `1px solid ${active ? T.pinkHeart : T.blueLine}`,
-              }}
-            >
-              {cat.label}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {AI_QUICK_INTENTS.map((opt) => (
-          <button
-            key={opt.id}
-            type="button"
-            disabled={!activeCategory || status === "loading"}
-            onClick={() => handleQuickIntent(opt.id)}
-            title={activeCategory ? undefined : "เลือกหมวดหมู่สินค้าก่อน"}
-            className="rounded-full px-3 py-1.5 text-xs font-semibold transition-colors duration-150 disabled:opacity-40"
-            style={{ background: T.pink, color: T.pinkText, border: `1px solid ${T.pink}` }}
+          <div
+            className="flex flex-shrink-0 items-center gap-2 px-4 py-3"
+            style={{ borderBottom: `1px solid ${T.blueLine}`, background: T.bgVia }}
           >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+            <Sparkles size={16} style={{ color: T.pinkText }} />
+            <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-sm font-bold">
+              Koomy
+            </span>
+          </div>
 
-      {status === "success" && result?.analysis && (
-        <div className="mt-4 rounded-2xl p-4 text-sm leading-relaxed" style={{ background: T.bgVia, color: T.inkStrong }}>
-          <p className="whitespace-pre-wrap">{result.analysis}</p>
-          {matchedProduct && (
+          <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+            {messages.length === 0 && (
+              <p className="text-xs font-medium leading-relaxed" style={{ color: T.inkSoft }}>
+                สวัสดีค่ะ! ถามเกี่ยวกับสินค้า ราคา ค่าส่ง หรือของในงบที่ต้องการได้เลยค่ะ
+              </p>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed"
+                  style={{
+                    background: m.role === "user" ? T.pinkHeart : T.bgVia,
+                    color: m.role === "user" ? "#FFFFFF" : T.inkStrong,
+                  }}
+                >
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {sending && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-1.5 rounded-2xl px-3.5 py-2.5" style={{ background: T.bgVia }}>
+                  <Loader2 size={13} className="animate-spin" style={{ color: T.inkSoft }} />
+                  <span className="text-xs" style={{ color: T.inkSoft }}>
+                    กำลังพิมพ์...
+                  </span>
+                </div>
+              </div>
+            )}
+            {error && (
+              <p className="flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
+                <AlertCircle size={12} />
+                {error}
+              </p>
+            )}
+          </div>
+
+          <form
+            onSubmit={handleSubmit}
+            className="flex flex-shrink-0 items-center gap-2 px-3 py-3"
+            style={{ borderTop: `1px solid ${T.blueLine}` }}
+          >
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="พิมพ์คำถาม..."
+              className="flex-1 rounded-full px-3.5 py-2 text-xs outline-none"
+              style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+            />
             <button
-              onClick={() => onOpenProduct(matchedProduct)}
-              className="mt-3 rounded-full px-4 py-2 text-xs font-bold text-white"
+              type="submit"
+              disabled={!input.trim() || sending}
+              aria-label="ส่งข้อความ"
+              className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white disabled:opacity-50"
               style={{ background: T.pinkHeart }}
             >
-              ดูสินค้านี้
+              <Send size={15} />
             </button>
-          )}
+          </form>
         </div>
       )}
-
-      {status === "not_found" && result?.message && (
-        <p className="mt-3 text-xs font-medium" style={{ color: T.inkSoft }}>
-          {result.message}
-        </p>
-      )}
-
-      {status === "error" && (
-        <p className="mt-3 flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
-          <AlertCircle size={13} />
-          {errorMessage}
-        </p>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -4067,8 +3985,8 @@ function UserAuthForm({
         className="w-full max-w-sm rounded-3xl p-7"
         style={{ background: T.paper, border: `1px solid ${T.blueLine}`, boxShadow: "0 30px 60px -20px rgba(148,116,196,0.4)" }}
       >
-        <div className="mb-5 flex items-center gap-2">
-          <img src="/logo.png" alt="KoomSure" className="h-10 w-10 flex-shrink-0 rounded-2xl object-cover" />
+        <div className="mb-5 flex items-center gap-3">
+          <img src="/logo-ribbon.png" alt="KoomSure" className="h-9 w-auto flex-shrink-0 object-contain" />
           <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-lg font-bold">
             {mode === "login" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
           </span>
@@ -4153,12 +4071,6 @@ function HomeHero() {
         aria-hidden="true"
       />
       <div className="relative flex flex-col items-start gap-3 sm:max-w-lg">
-        <span
-          className="rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider"
-          style={{ background: "rgba(255,255,255,0.65)", color: T.pinkText }}
-        >
-          เปรียบเทียบอย่างมั่นใจ
-        </span>
         <h1
           style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }}
           className="text-2xl font-bold leading-tight sm:text-4xl"
@@ -4168,6 +4080,198 @@ function HomeHero() {
         <p className="text-sm leading-relaxed sm:text-base" style={{ color: T.ink }}>
           เทียบราคา ค่าส่ง และราคาย้อนหลัง จากหลายร้านค้าออนไลน์ในที่เดียว ก่อนตัดสินใจซื้อทุกครั้ง
         </p>
+      </div>
+      {/* ภาพประกอบเต็มรูปแบบ (คนเข็นรถเข็นช้อปปิ้ง) - จุดเดียวในแอปที่ใช้โลโก้เวอร์ชันนี้ตอนนี้ ซ่อนบนจอเล็ก
+          กันดันเนื้อหาข้อความล้น ไม่กระทบ layout มือถือ */}
+      <img
+        src="/logo.png"
+        alt=""
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-6 right-6 hidden h-48 w-48 object-contain drop-shadow-xl sm:block md:right-10 md:h-60 md:w-60 lg:right-16 lg:h-72 lg:w-72"
+      />
+    </div>
+  );
+}
+
+// จอเปิดแอป: โชว์โลโก้กลางจอสั้นๆ ก่อนไป WelcomeScreen - แสดงทุกครั้งที่เปิดแอปใหม่ (ยกเว้น login ค้างอยู่แล้ว
+// ซึ่ง App() จะข้ามขั้นตอนนี้ไปเลย ไม่มาถึง component นี้) แตะหน้าจอได้เพื่อข้ามโดยไม่ต้องรอ
+function IntroSplash({ onDone }: { onDone: () => void }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setVisible(true));
+    const timer = setTimeout(onDone, 1800);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+  }, [onDone]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex cursor-pointer items-center justify-center overflow-hidden"
+      style={{
+        // ไล่สีชมพูแบบ Canva - เข้มกว่าโทน gradient หลักของแอป (ซึ่งผสม 3 เฉดพาสเทล) ใช้เฉพาะตอนนี้เพื่อให้
+        // เป็นช่วงเวลาแบรนด์ที่เด่นสุดตอนเปิดแอป ก่อนเข้าสู่โทนพาสเทลปกติของทั้งแอป - สีที่ใช้ยังเป็นสีจาก T
+        // ทั้งหมด (pinkHeart/pink/lavender) ไม่เพิ่มสีใหม่
+        background: `linear-gradient(135deg, ${T.pinkHeart} 0%, ${T.pink} 55%, ${T.lavender} 100%)`,
+        fontFamily: "'Inter', sans-serif",
+      }}
+      onClick={onDone}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+      `}</style>
+
+      {/* วงไล่เบลอตกแต่งพื้นหลัง - สไตล์คล้าย Canva template ที่มักมีรูปทรงนุ่มๆ ลอยอยู่หลังข้อความ */}
+      <div
+        className="pointer-events-none absolute -left-20 -top-24 h-72 w-72 rounded-full sm:h-96 sm:w-96"
+        style={{ background: "#FFFFFF", opacity: 0.25, filter: "blur(60px)" }}
+        aria-hidden="true"
+      />
+      <div
+        className="pointer-events-none absolute -bottom-24 -right-16 h-80 w-80 rounded-full sm:h-[28rem] sm:w-[28rem]"
+        style={{ background: T.lavender, opacity: 0.45, filter: "blur(70px)" }}
+        aria-hidden="true"
+      />
+
+      {/* เหลือแค่โลโก้ ไม่มีข้อความอื่นบนหน้านี้แล้วตามที่ขอ - ริบบิ้น "KoomSure" ในภาพเองมีชื่อแบรนด์อยู่แล้ว */}
+      <div
+        className="relative flex items-center justify-center px-6 transition-all duration-500 ease-out"
+        style={{ opacity: visible ? 1 : 0, transform: visible ? "scale(1)" : "scale(0.92)" }}
+      >
+        <img
+          src="/logo-ribbon.png"
+          alt="KoomSure"
+          className="w-full max-w-sm object-contain drop-shadow-xl sm:max-w-lg"
+        />
+      </div>
+    </div>
+  );
+}
+
+// หน้า welcome/login แบบ split-screen ตอนเปิดแอปครั้งแรก - ฝั่งซ้ายฟอร์ม login/สมัครสมาชิก (ใช้
+// loginUser/registerUser ชุดเดียวกับ UserAuthForm) ฝั่งขวาโลโก้/ภาพแบรนด์ (ซ่อนบนจอเล็กกันฟอร์มถูกดันลง)
+// ข้ามได้เสมอ - ปุ่มเข้าสู่ระบบที่มุมบนขวาของ UserApp (เดิม) ยังใช้งานได้ปกติสำหรับคนที่ข้ามไปแล้วเปลี่ยนใจทีหลัง
+function WelcomeScreen({ onSkip, onLoginSuccess }: { onSkip: () => void; onLoginSuccess: () => void }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      const data = mode === "login" ? await loginUser(username, password) : await registerUser(username, password);
+      persistUserSession(data.access_token, data.username);
+      onLoginSuccess();
+    } catch (err) {
+      setError((err as Error).message || "เกิดข้อผิดพลาด");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col overflow-y-auto sm:flex-row" style={{ background: T.paper }}>
+      <div className="flex w-full flex-1 flex-col justify-center px-6 py-10 sm:w-1/2 sm:px-12 lg:px-20">
+        <div className="mx-auto w-full max-w-sm">
+          <div className="mb-6 flex items-center gap-3">
+            <img src="/logo-ribbon.png" alt="KoomSure" className="h-11 w-auto flex-shrink-0 object-contain" />
+            <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }} className="text-xl font-bold">
+              ยินดีต้อนรับ
+            </span>
+          </div>
+          <p className="mb-6 text-sm" style={{ color: T.inkSoft }}>
+            เข้าสู่ระบบเพื่อบันทึกรายการโปรดของคุณ หรือข้ามไปดูสินค้าได้เลย
+          </p>
+
+          <form onSubmit={handleSubmit}>
+            <label className="mb-1 block text-xs font-bold" style={{ color: T.inkStrong }}>
+              ชื่อผู้ใช้
+            </label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="mb-3 w-full rounded-xl px-3.5 py-2.5 text-sm outline-none"
+              style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+              placeholder="username"
+            />
+
+            <label className="mb-1 block text-xs font-bold" style={{ color: T.inkStrong }}>
+              รหัสผ่าน
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mb-2 w-full rounded-xl px-3.5 py-2.5 text-sm outline-none"
+              style={{ background: T.bgVia, border: `1px solid ${T.blueLine}`, color: T.inkStrong }}
+              placeholder="••••••••"
+            />
+
+            {error && (
+              <p className="mb-2 flex items-center gap-1 text-xs font-semibold" style={{ color: T.red }}>
+                <AlertCircle size={13} />
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="mt-2 w-full rounded-xl py-2.5 text-sm font-bold transition-colors duration-150 disabled:opacity-60"
+              style={{ background: T.pinkHeart, color: "#FFFFFF" }}
+            >
+              {submitting ? "กำลังดำเนินการ..." : mode === "login" ? "เข้าสู่ระบบ" : "สมัครสมาชิก"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={() => setMode(mode === "login" ? "register" : "login")}
+            className="mt-3 w-full text-center text-xs font-semibold"
+            style={{ color: T.pinkText }}
+          >
+            {mode === "login" ? "ยังไม่มีบัญชี? สมัครสมาชิก" : "มีบัญชีอยู่แล้ว? เข้าสู่ระบบ"}
+          </button>
+
+          <button
+            type="button"
+            onClick={onSkip}
+            className="mt-6 w-full rounded-xl py-2.5 text-center text-sm font-bold transition-colors duration-150"
+            style={{ background: T.paper, color: T.inkStrong, border: `1px solid ${T.blueLine}` }}
+          >
+            ข้ามไปก่อน เลือกดูสินค้าเลย
+          </button>
+        </div>
+      </div>
+
+      {/* ฝั่งขวา: รูปภาพเต็มพื้นที่ (ไม่ใช่โลโก้แล้ว) - ภาพช้อปปิ้งออนไลน์/เทคโนโลยี ฟรีลิขสิทธิ์จาก Pexels
+          (ไม่ต้องใส่เครดิตตามเงื่อนไขการใช้งานฟรีของ Pexels) ให้บรรยากาศหน้า welcome ดูเป็นมืออาชีพขึ้น */}
+      <div className="relative hidden flex-1 overflow-hidden sm:block sm:w-1/2">
+        <img
+          src="/login-hero.jpg"
+          alt="ช้อปปิ้งออนไลน์อย่างชาญฉลาดด้วย KoomSure"
+          className="h-full w-full object-cover"
+        />
+        <div
+          className="absolute inset-0"
+          style={{ background: "linear-gradient(0deg, rgba(178,62,104,0.6) 0%, rgba(178,62,104,0.05) 45%, rgba(178,62,104,0.2) 100%)" }}
+          aria-hidden="true"
+        />
+        <div className="absolute bottom-10 left-8 right-8">
+          <span style={{ fontFamily: "'Fraunces', serif", color: "#FFFFFF" }} className="text-2xl font-bold drop-shadow-sm lg:text-3xl">
+            ช้อปอย่างมั่นใจ ด้วยข้อมูลราคาจริง
+          </span>
+          <p className="mt-2 text-sm font-medium" style={{ color: "rgba(255,255,255,0.92)" }}>
+            เทียบราคา ค่าส่ง และราคาย้อนหลัง จากหลายร้านค้าออนไลน์ในที่เดียว
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -4182,6 +4286,14 @@ function UserApp() {
   const [budgetInput, setBudgetInput] = useState(""); // เก็บเป็น string เพื่อให้ควบคุมช่องว่าง/ค่าลบได้ตรงตามที่พิมพ์
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+
+  // เปิดแชท KoomSure AI แล้วถามเกี่ยวกับสินค้านี้ให้อัตโนมัติ - เรียกจากปุ่ม "ถาม AI เกี่ยวกับสินค้านี้"
+  // ใน ProductModal (ดู ChatWidget ด้านล่างสำหรับตัว UI จริง - ประกาศ state ไว้ที่นี่เพราะ ChatWidget
+  // ต้อง mount แค่ครั้งเดียวทั้งหน้า ไม่ใช่ซ้อนอยู่ใน ProductModal ที่ปิด/เปิดใหม่ทุกครั้ง)
+  const [chatSeed, setChatSeed] = useState<ChatSeed | null>(null);
+  const requestChatAbout = useCallback((productName: string) => {
+    setChatSeed({ text: `บอกฉันเกี่ยวกับ ${productName} หน่อย`, nonce: Date.now() });
+  }, []);
 
   // บัญชีลูกค้าทั่วไป: session อยู่ถาวรใน localStorage - คนละระบบ คนละ token กับ adminToken โดยสิ้นเชิง
   const [userToken, setUserToken] = useState<string | null>(() => localStorage.getItem(USER_TOKEN_STORAGE_KEY));
@@ -4213,8 +4325,7 @@ function UserApp() {
   }, [userToken]);
 
   const handleAuthSuccess = useCallback((token: string, username: string) => {
-    localStorage.setItem(USER_TOKEN_STORAGE_KEY, token);
-    localStorage.setItem(USER_USERNAME_STORAGE_KEY, username);
+    persistUserSession(token, username);
     setUserToken(token);
     setUserUsername(username);
     setShowAuthForm(false);
@@ -4397,24 +4508,14 @@ function UserApp() {
       >
         <div className="mx-auto flex max-w-5xl flex-col gap-3 sm:gap-4">
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <img
-                src="/logo.png"
-                alt="KoomSure"
-                className="h-10 w-10 flex-shrink-0 rounded-2xl object-cover sm:h-11 sm:w-11"
-                style={{ boxShadow: "0 2px 10px -2px rgba(148,116,196,0.35)" }}
-              />
-              <div className="flex flex-col leading-tight">
-                <span style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong, letterSpacing: "0.02em" }} className="text-lg font-bold sm:text-xl">
-                  KoomSure
-                </span>
-                <span className="text-xs font-bold sm:text-base" style={{ color: T.pinkText }}>
-                  เทียบราคา ค่าส่ง และราคาย้อนหลัง ก่อนตัดสินใจซื้อ{" "}
-                  <span className="opacity-70" aria-hidden="true">
-                    📱💻⌚🎧
-                  </span>
-                </span>
-              </div>
+            {/* ใช้โลโก้ริบบิ้น (ตัวหนังสือ "KoomSure" ล้วนๆ) แทนภาพประกอบเต็มรูปแบบตรงนี้ - ขนาดเล็กในหัวเว็บ
+                ทำให้รายละเอียดของภาพประกอบ (คนเข็นรถเข็น ฯลฯ) มองไม่ออก ริบบิ้นอ่านง่ายกว่าตอนเล็ก และมีชื่อ
+                แบรนด์อยู่ในภาพแล้ว จึงไม่ต้องมีข้อความ "KoomSure" แยกซ้ำอีก */}
+            <div className="flex items-center gap-3">
+              <img src="/logo-ribbon.png" alt="KoomSure" className="h-10 w-auto flex-shrink-0 object-contain sm:h-12" />
+              <span className="hidden text-xs font-bold sm:inline sm:text-base" style={{ color: T.pinkText }}>
+                เทียบราคา ค่าส่ง และราคาย้อนหลัง ก่อนตัดสินใจซื้อ
+              </span>
             </div>
 
             <div className="flex items-center gap-3">
@@ -4563,7 +4664,6 @@ function UserApp() {
 
       <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
         <HomeHero />
-        <AiAssistantCard onOpenProduct={openModal} />
 
         {!query.trim() && activeCategory === "all" && activePriceRange === "all" && budgetValue <= 0 && !showFavoritesOnly && (
           <>
@@ -4607,9 +4707,12 @@ function UserApp() {
         isFavorite={activeProduct ? favorites.has(activeProduct.product_id) : false}
         onToggleFavorite={toggleFavorite}
         onSelectRelated={handleSwitchProduct}
+        onAskAi={requestChatAbout}
       />
 
       {showAuthForm && <UserAuthForm onSuccess={handleAuthSuccess} onCancel={() => setShowAuthForm(false)} />}
+
+      <ChatWidget seed={chatSeed} />
 
       <AdminEntryButton />
     </div>
@@ -4753,6 +4856,13 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [catalogKey, setCatalogKey] = useState(0); // bump ค่านี้เพื่อบังคับ UserApp mount ใหม่หลังข้อมูลสินค้าเปลี่ยน
 
+  // splash -> welcome/login -> main: เฉพาะฝั่งลูกค้าทั่วไป (ไม่กระทบ /admin เลย - เช็ค isAdminPath() ด้านล่าง
+  // ก่อนถึงโค้ดส่วนนี้) ถ้ามี token ค้างจาก session ก่อนหน้าอยู่แล้ว ข้าม splash/welcome ไปที่ "main" เลย -
+  // ผู้ใช้ที่ login ค้างไว้ไม่ควรต้องเจอหน้า onboarding ซ้ำทุกครั้งที่เปิดแอป
+  const [stage, setStage] = useState<"splash" | "welcome" | "main">(() =>
+    localStorage.getItem(USER_TOKEN_STORAGE_KEY) ? "main" : "splash"
+  );
+
   // โหลดแคตตาล็อกสินค้าจริงจาก backend ครั้งแรกตอนแอปเริ่มทำงาน (ก่อนหน้านี้ใช้ PRODUCTS แบบ hardcode ในไฟล์)
   useEffect(() => {
     fetchLiveProducts()
@@ -4785,5 +4895,11 @@ export default function App() {
   }
 
   // ไม่ได้อยู่ที่ /admin - หน้าเว็บปกติสำหรับลูกค้าทั่วไป ไม่มีร่องรอยของโหมดแอดมินอยู่บนหน้านี้เลย
+  if (stage === "splash") {
+    return <IntroSplash onDone={() => setStage("welcome")} />;
+  }
+  if (stage === "welcome") {
+    return <WelcomeScreen onSkip={() => setStage("main")} onLoginSuccess={() => setStage("main")} />;
+  }
   return <UserApp key={catalogKey} />;
 }
