@@ -4075,10 +4075,13 @@ function HomeHero() {
           style={{ fontFamily: "'Fraunces', serif", color: T.inkStrong }}
           className="text-2xl font-bold leading-tight sm:text-4xl"
         >
-          ซื้อของไอทีให้คุ้ม ด้วยข้อมูลราคาจริง
+          เทียบราคาอุปกรณ์อิเล็กทรอนิกส์ก่อนตัดสินใจซื้อ
         </h1>
         <p className="text-sm leading-relaxed sm:text-base" style={{ color: T.ink }}>
-          เทียบราคา ค่าส่ง และราคาย้อนหลัง จากหลายร้านค้าออนไลน์ในที่เดียว ก่อนตัดสินใจซื้อทุกครั้ง
+          รวมราคาจากหลายร้านค้าออนไลน์ พร้อมประวัติราคาย้อนหลังเท่าที่ระบบเก็บได้ ไว้ในที่เดียว
+        </p>
+        <p className="text-xs" style={{ color: T.inkSoft }}>
+          ราคาอ้างอิง ณ เวลาที่ระบบสแกน โปรดตรวจสอบกับร้านค้าอีกครั้งก่อนซื้อ
         </p>
       </div>
       {/* ภาพประกอบเต็มรูปแบบ (คนเข็นรถเข็นช้อปปิ้ง) - จุดเดียวในแอปที่ใช้โลโก้เวอร์ชันนี้ตอนนี้ ซ่อนบนจอเล็ก
@@ -4514,7 +4517,7 @@ function UserApp() {
             <div className="flex items-center gap-3">
               <img src="/logo-ribbon.png" alt="KoomSure" className="h-10 w-auto flex-shrink-0 object-contain sm:h-12" />
               <span className="hidden text-xs font-bold sm:inline sm:text-base" style={{ color: T.pinkText }}>
-                เทียบราคา ค่าส่ง และราคาย้อนหลัง ก่อนตัดสินใจซื้อ
+                เทียบราคาและดูราคาย้อนหลัง ก่อนตัดสินใจซื้อ
               </span>
             </div>
 
